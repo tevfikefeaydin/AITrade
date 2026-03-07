@@ -168,13 +168,13 @@ class FeatureBuffer:
         return True
 
     def _compute_wick_features(self, row: pd.Series) -> Dict:
-        """Compute candle body and wick features."""
+        """Compute candle wick ratio features (raw values removed — price-level dependent)."""
         o, h, l, c = row["open"], row["high"], row["low"], row["close"]
 
-        body = abs(c - o)
         range_val = h - l
 
         if range_val > 0:
+            body = abs(c - o)
             upper_wick = h - max(o, c)
             lower_wick = min(o, c) - l
 
@@ -182,17 +182,11 @@ class FeatureBuffer:
             lower_wick_ratio = lower_wick / range_val
             body_ratio = body / range_val
         else:
-            upper_wick = 0.0
-            lower_wick = 0.0
             upper_wick_ratio = 0.0
             lower_wick_ratio = 0.0
             body_ratio = 0.0
 
         return {
-            "body": body,
-            "range": range_val,
-            "upper_wick": upper_wick,
-            "lower_wick": lower_wick,
             "upper_wick_ratio": upper_wick_ratio,
             "lower_wick_ratio": lower_wick_ratio,
             "body_ratio": body_ratio,
@@ -249,21 +243,14 @@ class FeatureBuffer:
     def _compute_ma_features(self, df: pd.DataFrame) -> Dict:
         """Compute moving average features."""
         if len(df) < self.rolling_window:
-            return {"ma_gap": 0.0, "ma_slope": 0.0}
+            return {"ma_gap": 0.0}
 
         ma = df["close"].iloc[-self.rolling_window:].mean()
         current = df["close"].iloc[-1]
 
         ma_gap = (current - ma) / ma if ma > 0 else 0.0
 
-        # MA slope (compare current MA to MA 5 bars ago)
-        if len(df) >= self.rolling_window + 5:
-            ma_prev = df["close"].iloc[-(self.rolling_window + 5):-5].mean()
-            ma_slope = (ma - ma_prev) / ma_prev if ma_prev > 0 else 0.0
-        else:
-            ma_slope = 0.0
-
-        return {"ma_gap": float(ma_gap), "ma_slope": float(ma_slope)}
+        return {"ma_gap": float(ma_gap)}
 
     def _compute_volume_features(self, df: pd.DataFrame) -> Dict:
         """Compute volume z-score and volume ratio."""
@@ -436,7 +423,6 @@ class FeatureBuffer:
             return {
                 "trend_4h": 0.0,
                 "ma_slope_4h": 0.0,
-                "volatility_4h": 0.0,
             }
 
         df_4h = df_4h.copy()
@@ -451,7 +437,6 @@ class FeatureBuffer:
             return {
                 "trend_4h": 0.0,
                 "ma_slope_4h": 0.0,
-                "volatility_4h": 0.0,
             }
 
         ma_series = eligible["close"].rolling(window=self.ma_length, min_periods=self.ma_length).mean()
@@ -465,17 +450,9 @@ class FeatureBuffer:
         else:
             ma_slope_4h = 0.0
 
-        # 4h volatility
-        returns_4h = np.log(eligible["close"] / eligible["close"].shift(1)).dropna()
-        if len(returns_4h) >= 20:
-            volatility_4h = returns_4h.iloc[-20:].std()
-        else:
-            volatility_4h = returns_4h.std() if len(returns_4h) > 0 else 0.0
-
         return {
             "trend_4h": trend_4h,
             "ma_slope_4h": float(ma_slope_4h),
-            "volatility_4h": float(volatility_4h) if pd.notna(volatility_4h) else 0.0,
         }
 
     def _compute_latest_adx(self, df_1h: pd.DataFrame, period: int = None) -> Optional[float]:

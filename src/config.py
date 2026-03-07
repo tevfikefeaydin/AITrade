@@ -168,6 +168,11 @@ def get_symbol_model_path(symbol: str) -> Path:
     return MODELS_DIR / f"{symbol}_model.pkl"
 
 
+def get_symbol_labeled_path(symbol: str) -> Path:
+    """Get the path for a symbol's labeled candidates file."""
+    return DATA_DIR / f"{symbol}_labeled.parquet"
+
+
 def get_symbol_oos_path(symbol: str) -> Path:
     """Get the path for a symbol's out-of-sample predictions."""
     return DATA_DIR / f"{symbol}_oos_predictions.parquet"

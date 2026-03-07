@@ -242,6 +242,7 @@ def compute_baseline_buy_hold(
     if len(df_1h) < 2:
         return {
             "bh_total_return": 0.0,
+            "bh_cagr": 0.0,
             "bh_sharpe_ratio": 0.0,
             "bh_max_drawdown": 0.0,
         }

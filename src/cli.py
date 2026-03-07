@@ -105,7 +105,7 @@ def cmd_build(args):
             df_labeled = label_candidates(df_candidates, df_1m, df_features=df_features)
 
             # Save labeled candidates
-            labeled_path = config.DATA_DIR / f"{symbol}_labeled.parquet"
+            labeled_path = config.get_symbol_labeled_path(symbol)
             save_parquet(df_labeled, labeled_path)
             logger.info(f"Saved {len(df_labeled)} labeled candidates to {labeled_path}")
 
@@ -141,7 +141,7 @@ def cmd_train(args):
         df_features = pd.read_parquet(features_path)
 
         # Load labeled candidates
-        labeled_path = config.DATA_DIR / f"{symbol}_labeled.parquet"
+        labeled_path = config.get_symbol_labeled_path(symbol)
         if not labeled_path.exists():
             logger.error(f"Labeled data not found for {symbol}. Run 'build' first.")
             continue
@@ -191,7 +191,7 @@ def cmd_backtest(args):
 
         # Load data
         features_path = config.get_symbol_features_path(symbol)
-        labeled_path = config.DATA_DIR / f"{symbol}_labeled.parquet"
+        labeled_path = config.get_symbol_labeled_path(symbol)
         hourly_path = config.DATA_DIR / f"{symbol}_1h.parquet"
         minute_path = config.get_symbol_data_path(symbol, "1m")
 
