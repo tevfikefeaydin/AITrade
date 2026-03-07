@@ -29,6 +29,16 @@ from .train import predict_proba
 logger = logging.getLogger(__name__)
 
 
+def _validate_unique_merge_keys(df: pd.DataFrame, cols: List[str], label: str) -> None:
+    """Prevent silent many-to-many merges on stale or malformed artifacts."""
+    duplicated = df.duplicated(subset=cols, keep=False)
+    if duplicated.any():
+        sample = df.loc[duplicated, cols].drop_duplicates().head(5).to_dict("records")
+        raise ValueError(
+            f"{label} has non-unique merge keys {cols}. Sample duplicates: {sample}"
+        )
+
+
 def simulate_barrier_exit(
     df_1m: pd.DataFrame,
     entry_time: pd.Timestamp,
@@ -76,9 +86,13 @@ def simulate_barrier_exit(
     window_df = df_1m.loc[mask].copy()
 
     if len(window_df) == 0:
-        # No data - exit at entry price minus costs
-        exit_price_net = calculate_costs(entry_price_with_costs, fee_bps, slippage_bps, is_buy=False)
-        return entry_time, exit_price_net, "TIMEOUT", entry_price_with_costs
+        # No post-entry minute data: fall back to the raw execution price and apply sell costs once.
+        logger.warning(
+            "No 1m data after entry at %s; using raw execution price fallback for timeout exit",
+            entry_time,
+        )
+        exit_price_net = calculate_costs(execution_price, fee_bps, slippage_bps, is_buy=False)
+        return entry_time, exit_price_net, "TIMEOUT", execution_price
 
     # Check each 1m bar
     for _, row in window_df.iterrows():
@@ -201,6 +215,17 @@ def run_backtest(
         if "signal_type_encoded" in oos_predictions.columns:
             oos_merge_cols.append("signal_type_encoded")
             oos_on_cols.append("signal_type_encoded")
+
+        _validate_unique_merge_keys(
+            df_candidates,
+            oos_on_cols,
+            "Backtest candidates for OOS merge",
+        )
+        _validate_unique_merge_keys(
+            oos_predictions,
+            oos_on_cols,
+            "OOS predictions",
+        )
 
         df_candidates = df_candidates.merge(
             oos_predictions[oos_merge_cols],

@@ -108,6 +108,47 @@ def test_live_intrabar_feature_sign_and_ratio():
     assert 0.0 <= out["up_down_ratio"] <= 1.0
 
 
+def test_live_intrabar_features_require_exact_hour_window():
+    """Live intrabar features must not borrow minutes from adjacent hours."""
+    fb = FeatureBuffer()
+    start = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+
+    prev_hour = pd.DataFrame(
+        {
+            "open_time": [start + timedelta(minutes=i) for i in range(60)],
+            "open": [100.0] * 60,
+            "high": [101.0] * 60,
+            "low": [99.0] * 60,
+            "close": [100.5] * 60,
+            "volume": [100.0] * 60,
+        }
+    )
+    current_hour_partial = pd.DataFrame(
+        {
+            "open_time": [start + timedelta(hours=1, minutes=i) for i in range(20)],
+            "open": [110.0] * 20,
+            "high": [112.0] * 20,
+            "low": [109.0] * 20,
+            "close": [111.0] * 20,
+            "volume": [200.0] * 20,
+        }
+    )
+    df_1m = pd.concat([prev_hour, current_hour_partial], ignore_index=True)
+
+    out = fb._compute_intrabar_features(
+        df_1m,
+        pd.Series({"open_time": start + timedelta(hours=1), "open": 110.0}),
+    )
+
+    assert out == {
+        "max_runup": 0.0,
+        "max_drawdown": 0.0,
+        "intrabar_vol": 0.0,
+        "intrabar_skew": 0.0,
+        "up_down_ratio": 0.5,
+    }
+
+
 def test_live_entry_signal_uses_close_breakout_not_high_spike():
     fb = FeatureBuffer()
 
@@ -228,6 +269,30 @@ def test_backfill_rest_fills_current_hour_accumulator(
     # Buffers should be populated
     assert len(ws.buffer_1m) > 0
     assert len(ws.buffer_1h) > 0
+
+
+def test_websocket_skips_incomplete_1h_bar():
+    """A live 1h bar should not be built when constituent 1m bars are missing."""
+    ws = BinanceWebSocket("btcusdt")
+    start = datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc)
+    ws._current_1h_bars = [
+        {
+            "open_time": start + timedelta(minutes=i),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 10.0,
+        }
+        for i in range(59)
+    ]
+    ws.on_1h_bar = AsyncMock()
+
+    asyncio.run(ws._build_1h_bar())
+
+    assert len(ws.buffer_1h) == 0
+    assert ws._current_1h_bars == []
+    ws.on_1h_bar.assert_not_called()
 
 
 @patch("src.live.websocket_client.config")
@@ -391,6 +456,28 @@ def test_train_fold_single_class_no_crash():
     assert model is not None
 
 
+def test_train_fold_single_class_training_no_crash():
+    """train_fold must gracefully handle folds where y_train has one class only."""
+    feature_cols = ["f1", "f2"]
+    train_df = pd.DataFrame({
+        "f1": np.random.randn(40),
+        "f2": np.random.randn(40),
+        "label": np.zeros(40, dtype=int),
+    })
+    test_df = pd.DataFrame({
+        "f1": np.random.randn(20),
+        "f2": np.random.randn(20),
+        "label": np.random.randint(0, 2, 20),
+    })
+
+    model, metrics = train_fold(train_df, test_df, feature_cols)
+    proba = model.predict_proba(test_df[feature_cols].values)[:, 1]
+
+    assert model is not None
+    assert np.allclose(proba, proba[0])
+    assert 0.0 <= metrics["accuracy"] <= 1.0
+
+
 # ---------------------------------------------------------------------------
 # Regression: signals.py produces execution_time/execution_price (T+1)
 # ---------------------------------------------------------------------------
@@ -465,9 +552,7 @@ def test_paper_trader_pending_signal_skips_stale_bar():
     """Pending signal must NOT execute when buffer_1m[-1] is the same bar
     that was present when the signal was generated.
 
-    Before fix: _position_monitor grabbed buffer_1m[-1]["open"] immediately,
-    which was the same bar that triggered the signal (stale data).
-    After fix: execution only happens when latest bar open_time > signal_bar_time.
+    Execution should only happen once the intended next 1m bar is available.
     """
     trader = PaperTrader.__new__(PaperTrader)
     trader._running = True
@@ -484,6 +569,7 @@ def test_paper_trader_pending_signal_skips_stale_bar():
         "prob": 0.7,
         "signal_time": datetime(2024, 6, 1, 14, 0),
         "signal_bar_time": signal_bar_time,
+        "execution_bar_time": signal_bar_time + timedelta(minutes=1),
     }
 
     # buffer_1m[-1] is the SAME bar (stale) — open_time == signal_bar_time
@@ -492,21 +578,7 @@ def test_paper_trader_pending_signal_skips_stale_bar():
     # Patch _open_position so we can detect if it's called
     trader._open_position = AsyncMock()
 
-    # Run one iteration of the monitor logic
-    async def _run_one_tick():
-        # Replicate the pending-signal block from _position_monitor
-        if trader._pending_signal is not None and trader.ws.buffer_1m:
-            latest_bar = trader.ws.buffer_1m[-1]
-            if latest_bar["open_time"] > trader._pending_signal["signal_bar_time"]:
-                execution_price = latest_bar["open"]
-                await trader._open_position(
-                    execution_price,
-                    trader._pending_signal["prob"],
-                    trader._pending_signal["signal_time"],
-                )
-                trader._pending_signal = None
-
-    asyncio.run(_run_one_tick())
+    asyncio.run(trader._execute_pending_signal_if_ready())
 
     # Should NOT have executed — bar is stale
     trader._open_position.assert_not_called()
@@ -516,11 +588,34 @@ def test_paper_trader_pending_signal_skips_stale_bar():
     new_bar_time = datetime(2024, 6, 1, 15, 0)
     trader.ws.buffer_1m = [{"open_time": new_bar_time, "open": 50100.0}]
 
-    asyncio.run(_run_one_tick())
+    asyncio.run(trader._execute_pending_signal_if_ready())
 
     # NOW it should have executed on the new bar's open price
     trader._open_position.assert_called_once_with(50100.0, 0.7, datetime(2024, 6, 1, 14, 0))
     assert trader._pending_signal is None  # consumed
+
+
+def test_paper_trader_pending_signal_uses_first_eligible_bar():
+    """Reconnect/gap scenarios must execute on the earliest eligible T+1 bar."""
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.ws = MagicMock()
+    trader._pending_signal = {
+        "prob": 0.8,
+        "signal_time": datetime(2024, 6, 1, 14, 0),
+        "signal_bar_time": datetime(2024, 6, 1, 14, 59),
+        "execution_bar_time": datetime(2024, 6, 1, 15, 0),
+    }
+
+    trader.ws.buffer_1m = [
+        {"open_time": datetime(2024, 6, 1, 14, 59), "open": 50000.0},
+        {"open_time": datetime(2024, 6, 1, 15, 0), "open": 50100.0},
+        {"open_time": datetime(2024, 6, 1, 15, 1), "open": 50200.0},
+    ]
+
+    execution_bar = trader._get_pending_execution_bar()
+
+    assert execution_bar["open_time"] == datetime(2024, 6, 1, 15, 0)
+    assert execution_bar["open"] == 50100.0
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +891,57 @@ def test_backtest_uses_oos_predictions_when_provided():
 
     # Only the 2 OOS-covered candidates should be considered
     assert summary.get("n_candidates", 0) == 2
+
+
+def test_backtest_rejects_ambiguous_oos_merge_without_signal_type():
+    """Stale OOS artifacts must not be merged on open_time alone in multi-signal mode."""
+    start = datetime(2024, 1, 1, 0, 0)
+    hours = 8
+
+    df_1h = pd.DataFrame({
+        "open_time": [start + timedelta(hours=i) for i in range(hours)],
+        "open": [100.0] * hours,
+        "high": [100.2] * hours,
+        "low": [99.8] * hours,
+        "close": [100.0] * hours,
+        "volume": [1000.0] * hours,
+    })
+    df_1m = pd.DataFrame({
+        "open_time": [start + timedelta(minutes=i) for i in range(hours * 60)],
+        "open": [100.0] * (hours * 60),
+        "high": [100.1] * (hours * 60),
+        "low": [99.9] * (hours * 60),
+        "close": [100.0] * (hours * 60),
+        "volume": [100.0] * (hours * 60),
+    })
+    df_features = pd.DataFrame({"open_time": df_1h["open_time"]})
+
+    duplicated_entry_time = start + timedelta(hours=2)
+    df_labeled = pd.DataFrame({
+        "entry_time": [duplicated_entry_time, duplicated_entry_time],
+        "entry_idx": [2, 2],
+        "entry_price": [100.0, 100.0],
+        "signal_type_encoded": [0, 1],
+    })
+    oos_predictions = pd.DataFrame({
+        "open_time": [duplicated_entry_time],
+        "oos_probability": [0.9],
+    })
+
+    with pytest.raises(ValueError, match="non-unique merge keys"):
+        run_backtest(
+            symbol="BTCUSDT",
+            df_features=df_features,
+            df_labeled=df_labeled,
+            model=DummyModel(),
+            df_1m=df_1m,
+            df_1h=df_1h,
+            prob_threshold=0.0,
+            pt=0.5,
+            sl=0.5,
+            max_hold=3,
+            oos_predictions=oos_predictions,
+        )
 
 
 # ---------------------------------------------------------------------------

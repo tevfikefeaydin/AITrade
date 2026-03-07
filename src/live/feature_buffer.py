@@ -114,6 +114,17 @@ class FeatureBuffer:
     # Maximum age (in hours) for the most recent 4h bar to be considered fresh.
     MAX_DATA_AGE_HOURS_4H: int = 8
 
+    @staticmethod
+    def _empty_intrabar_features() -> Dict:
+        """Return neutral intrabar features when the exact 1h window is unavailable."""
+        return {
+            "max_runup": 0.0,
+            "max_drawdown": 0.0,
+            "intrabar_vol": 0.0,
+            "intrabar_skew": 0.0,
+            "up_down_ratio": 0.5,
+        }
+
     def _has_sufficient_data(self) -> bool:
         """Check if we have enough *and fresh enough* data for feature computation."""
         if self.bars_1h is None or len(self.bars_1h) < self.ma_length:
@@ -290,18 +301,30 @@ class FeatureBuffer:
 
     def _compute_intrabar_features(self, df_1m: pd.DataFrame, bar_1h: pd.Series) -> Dict:
         """Compute intrabar features from 1m data within the 1h bar."""
-        # Get 1m bars from the last hour
         if len(df_1m) < 60:
-            return {
-                "max_runup": 0.0,
-                "max_drawdown": 0.0,
-                "intrabar_vol": 0.0,
-                "intrabar_skew": 0.0,
-                "up_down_ratio": 0.5,
-            }
+            return self._empty_intrabar_features()
 
-        # Last 60 1m bars (1 hour)
-        df_hour = df_1m.iloc[-60:].copy()
+        df_1m = df_1m.copy()
+        if not pd.api.types.is_datetime64_any_dtype(df_1m["open_time"]):
+            df_1m["open_time"] = pd.to_datetime(df_1m["open_time"], utc=True)
+        if "open_time" in bar_1h:
+            hour_start = pd.Timestamp(bar_1h["open_time"])
+            if hour_start.tzinfo is None and getattr(df_1m["open_time"].dt, "tz", None) is not None:
+                hour_start = hour_start.tz_localize(df_1m["open_time"].dt.tz)
+            hour_end = hour_start + pd.Timedelta(hours=1)
+            df_hour = df_1m[
+                (df_1m["open_time"] >= hour_start) & (df_1m["open_time"] < hour_end)
+            ].sort_values("open_time")
+
+            if len(df_hour) != 60:
+                logger.warning(
+                    "Incomplete intrabar window for %s: %d/60 1m bars",
+                    hour_start,
+                    len(df_hour),
+                )
+                return self._empty_intrabar_features()
+        else:
+            df_hour = df_1m.sort_values("open_time").iloc[-60:].copy()
 
         entry_price = df_hour["open"].iloc[0]
 

@@ -26,6 +26,21 @@ from .features import get_feature_columns
 logger = logging.getLogger(__name__)
 
 
+class ConstantProbabilityModel:
+    """Small fallback model for single-class training windows."""
+
+    def __init__(self, positive_probability: float):
+        self.positive_probability = float(np.clip(positive_probability, 1e-6, 1 - 1e-6))
+
+    def fit(self, X, y):
+        return self
+
+    def predict_proba(self, X):
+        n = len(X)
+        positive = np.full(n, self.positive_probability, dtype=float)
+        return np.column_stack([1.0 - positive, positive])
+
+
 def get_model():
     """
     Get the ML model to use for training.
@@ -142,30 +157,48 @@ def train_fold(
     y_train = (y_train >= 0.5).astype(int)
     y_test_binary = (y_test >= 0.5).astype(int)
 
-    # Train model
-    model = get_model()
-
-    # Early stopping for LightGBM (skip if test set is single-class)
-    has_two_classes = len(np.unique(y_test_binary)) > 1
-    try:
-        import lightgbm as lgb
-        is_lgbm = isinstance(model, lgb.LGBMClassifier)
-    except ImportError:
-        is_lgbm = False
-
-    if is_lgbm and has_two_classes:
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test_binary)],
-            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
+    train_classes = np.unique(y_train)
+    if len(train_classes) < 2:
+        constant_class = float(train_classes[0]) if len(train_classes) == 1 else 0.0
+        logger.warning(
+            "Single-class training fold detected; using constant-probability fallback (class=%s)",
+            int(constant_class),
         )
-    else:
+        model = ConstantProbabilityModel(positive_probability=constant_class)
         model.fit(X_train, y_train)
+        best_iter = 1
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+    else:
+        # Train model
+        model = get_model()
 
-    best_iter = getattr(model, "best_iteration_", model.n_estimators if hasattr(model, "n_estimators") else 500)
+        # Early stopping for LightGBM (skip if test set is single-class)
+        has_two_classes = len(np.unique(y_test_binary)) > 1
+        try:
+            import lightgbm as lgb
+            is_lgbm = isinstance(model, lgb.LGBMClassifier)
+        except ImportError:
+            is_lgbm = False
 
-    # Predict probabilities
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
+        if is_lgbm and has_two_classes:
+            model.fit(
+                X_train, y_train,
+                eval_set=[(X_test, y_test_binary)],
+                callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
+            )
+        else:
+            model.fit(X_train, y_train)
+
+        best_iter = getattr(
+            model,
+            "best_iteration_",
+            model.n_estimators if hasattr(model, "n_estimators") else 500,
+        )
+
+        # Predict probabilities
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+    has_two_classes = len(np.unique(y_test_binary)) > 1
 
     # Compute metrics (using binary labels for AUC/logloss)
     metrics = {}
@@ -360,12 +393,20 @@ def train_walk_forward(
     y_all = (df_merged["label"].values >= 0.5).astype(int)  # Binarize fractional labels
     X_all = np.nan_to_num(X_all, nan=0.0)
 
-    final_model = get_model()
-    # Use average best iteration from folds (minimum 10)
-    if best_iterations:
-        avg_best_iter = max(10, int(np.mean(best_iterations)))
-        final_model.n_estimators = avg_best_iter
-        logger.info(f"Final model n_estimators set to {avg_best_iter} (fold average)")
+    if len(np.unique(y_all)) < 2:
+        constant_class = float(y_all[0]) if len(y_all) > 0 else 0.0
+        logger.warning(
+            "Final training data for %s is single-class; saving constant-probability fallback",
+            symbol,
+        )
+        final_model = ConstantProbabilityModel(positive_probability=constant_class)
+    else:
+        final_model = get_model()
+        # Use average best iteration from folds (minimum 10)
+        if best_iterations:
+            avg_best_iter = max(10, int(np.mean(best_iterations)))
+            final_model.n_estimators = avg_best_iter
+            logger.info(f"Final model n_estimators set to {avg_best_iter} (fold average)")
     final_model.fit(X_all, y_all)
 
     # Save feature columns with model for prediction
