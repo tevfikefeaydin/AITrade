@@ -1,0 +1,19 @@
+services:
+  paper-trader:
+    build: .
+    container_name: aitradew-paper
+    restart: unless-stopped
+    volumes:
+      - app-data:/app/data
+      - app-models:/app/models
+      - app-outputs:/app/outputs
+      - app-logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-m", "src.cli", "paper", "--all"]
+
+volumes:
+  app-data:
+  app-models:
+  app-outputs:
+  app-logs:
