@@ -76,9 +76,9 @@ def simulate_barrier_exit(
     window_df = df_1m.loc[mask].copy()
 
     if len(window_df) == 0:
-        # No data - exit at entry price minus costs
-        exit_price_net = calculate_costs(entry_price_with_costs, fee_bps, slippage_bps, is_buy=False)
-        return entry_time, exit_price_net, "TIMEOUT", entry_price_with_costs
+        # No data - exit at raw execution price minus costs
+        exit_price_net = calculate_costs(execution_price, fee_bps, slippage_bps, is_buy=False)
+        return entry_time, exit_price_net, "TIMEOUT", execution_price
 
     # Check each 1m bar
     for _, row in window_df.iterrows():
