@@ -191,6 +191,7 @@ class PaperTrader:
         self.features.link_websocket(self.ws)
 
         # Set up callbacks
+        self.ws.on_1m_bar = self._on_minute_bar
         self.ws.on_1h_bar = self._on_hourly_bar
 
         # Print startup info
@@ -300,6 +301,39 @@ class PaperTrader:
             )
             self._save_guard_state()
 
+    async def _on_minute_bar(self, bar: dict):
+        """Handle new 1m bars so deferred T+1 entries use the earliest eligible bar."""
+        await self._execute_pending_signal_if_ready()
+
+    def _get_pending_execution_bar(self) -> Optional[dict]:
+        """Return the first buffered 1m bar eligible for a pending T+1 execution."""
+        if self._pending_signal is None or not self.ws.buffer_1m:
+            return None
+
+        execution_bar_time = self._pending_signal.get("execution_bar_time")
+        if execution_bar_time is None:
+            execution_bar_time = self._pending_signal["signal_bar_time"] + timedelta(minutes=1)
+
+        for bar in self.ws.buffer_1m:
+            if bar["open_time"] >= execution_bar_time:
+                return bar
+
+        return None
+
+    async def _execute_pending_signal_if_ready(self) -> bool:
+        """Execute a staged signal once its intended next bar is available."""
+        execution_bar = self._get_pending_execution_bar()
+        if execution_bar is None:
+            return False
+
+        await self._open_position(
+            execution_bar["open"],
+            self._pending_signal["prob"],
+            self._pending_signal["signal_time"],
+        )
+        self._pending_signal = None
+        return True
+
     async def _on_hourly_bar(self, bar: dict):
         """
         Handle 1-hour bar close event.
@@ -314,6 +348,10 @@ class PaperTrader:
         # Skip if we already have an open position
         if self.positions.has_open_position(self.symbol):
             logger.debug("Skipping - already have open position")
+            return
+
+        if self._pending_signal is not None:
+            logger.info("Skipping new signal - previous signal is still awaiting T+1 execution")
             return
 
         self._evaluate_guardrail_state()
@@ -394,10 +432,12 @@ class PaperTrader:
             return
 
         # Defer execution to next 1m bar (T+1 execution, matches backtest)
+        signal_bar_time = self.ws.buffer_1m[-1]["open_time"]
         self._pending_signal = {
             "prob": best_prob,
             "signal_time": timestamp,
-            "signal_bar_time": self.ws.buffer_1m[-1]["open_time"],
+            "signal_bar_time": signal_bar_time,
+            "execution_bar_time": signal_bar_time + timedelta(minutes=1),
             "threshold": threshold,
             "signal_type": best_signal_type,
         }
@@ -454,17 +494,7 @@ class PaperTrader:
             await asyncio.sleep(60)  # Check every minute
 
             # Execute pending signal at next bar's open (T+1 execution)
-            if self._pending_signal is not None and self.ws.buffer_1m:
-                latest_bar = self.ws.buffer_1m[-1]
-                # Only execute when a genuinely new bar has arrived after the signal
-                if latest_bar["open_time"] > self._pending_signal["signal_bar_time"]:
-                    execution_price = latest_bar["open"]
-                    await self._open_position(
-                        execution_price,
-                        self._pending_signal["prob"],
-                        self._pending_signal["signal_time"],
-                    )
-                    self._pending_signal = None
+            await self._execute_pending_signal_if_ready()
 
             for pos in self.positions.get_open():
                 await self._check_position_exit(pos)

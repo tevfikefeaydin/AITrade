@@ -108,6 +108,42 @@ class BinanceWebSocket:
         self._reconnect_delay = 1
         self._max_reconnect_delay = 60
 
+    def _get_complete_hour_bars(self, bars: List[Dict]) -> Optional[List[Dict]]:
+        """Return a contiguous 60-minute slice for one hour, or None."""
+        if len(bars) != 60:
+            return None
+
+        sorted_bars = sorted(bars, key=lambda b: pd.Timestamp(b["open_time"]))
+        actual_times = pd.DatetimeIndex([pd.Timestamp(b["open_time"]) for b in sorted_bars])
+        hour_start = actual_times[0].floor("h")
+        expected_times = pd.date_range(
+            start=hour_start,
+            periods=60,
+            freq="min",
+            tz=hour_start.tz,
+        )
+
+        if not actual_times.is_unique or not actual_times.equals(expected_times):
+            return None
+
+        return sorted_bars
+
+    def _aggregate_1h_bar(self, bars: List[Dict]) -> Optional[Dict]:
+        """Aggregate exactly one complete hour of 1m bars."""
+        complete_bars = self._get_complete_hour_bars(bars)
+        if complete_bars is None:
+            return None
+
+        first_time = pd.Timestamp(complete_bars[0]["open_time"]).floor("h")
+        return {
+            "open_time": first_time,
+            "open": complete_bars[0]["open"],
+            "high": max(b["high"] for b in complete_bars),
+            "low": min(b["low"] for b in complete_bars),
+            "close": complete_bars[-1]["close"],
+            "volume": sum(b["volume"] for b in complete_bars),
+        }
+
     def backfill(self, symbol: str) -> None:
         """
         Fill buffers from existing parquet files so the system is
@@ -309,17 +345,15 @@ class BinanceWebSocket:
                 if bar_time.minute == 59:
                     # Build 1h bar synchronously (no callback during gap-fill)
                     if self._current_1h_bars:
-                        bars = self._current_1h_bars
-                        bar_1h = {
-                            "open_time": bars[0]["open_time"].replace(minute=0, second=0)
-                            if isinstance(bars[0]["open_time"], datetime)
-                            else pd.Timestamp(bars[0]["open_time"]).replace(minute=0, second=0),
-                            "open": bars[0]["open"],
-                            "high": max(b["high"] for b in bars),
-                            "low": min(b["low"] for b in bars),
-                            "close": bars[-1]["close"],
-                            "volume": sum(b["volume"] for b in bars),
-                        }
+                        bar_1h = self._aggregate_1h_bar(self._current_1h_bars)
+                        if bar_1h is None:
+                            logger.warning(
+                                "Gap-fill: skipping incomplete 1h bar ending at %s",
+                                bar_time,
+                            )
+                            self._current_1h_bars = []
+                            continue
+
                         self.buffer_1h.append(bar_1h)
                         self._current_4h_bars.append(bar_1h)
 
@@ -445,20 +479,16 @@ class BinanceWebSocket:
         if not self._current_1h_bars:
             return
 
-        bars = self._current_1h_bars
-
-        if len(bars) < 60:
-            logger.warning("Incomplete 1h bar: %d/60 1m bars", len(bars))
-
-        # OHLC aggregation
-        bar_1h = {
-            "open_time": bars[0]["open_time"].replace(minute=0, second=0),
-            "open": bars[0]["open"],
-            "high": max(b["high"] for b in bars),
-            "low": min(b["low"] for b in bars),
-            "close": bars[-1]["close"],
-            "volume": sum(b["volume"] for b in bars),
-        }
+        bar_1h = self._aggregate_1h_bar(self._current_1h_bars)
+        if bar_1h is None:
+            last_time = self._current_1h_bars[-1]["open_time"]
+            logger.warning(
+                "Skipping incomplete 1h bar ending at %s (%d/60 1m bars)",
+                last_time,
+                len(self._current_1h_bars),
+            )
+            self._current_1h_bars = []
+            return
 
         # Add to 1h buffer
         self.buffer_1h.append(bar_1h)

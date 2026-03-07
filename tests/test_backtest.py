@@ -165,6 +165,40 @@ class TestBarrierExitSimulation:
         expected_net = gross_exit_price * (1 - (fee_bps + slippage_bps) / 10000)
         assert exit_price_net == pytest.approx(expected_net, rel=0.001)
 
+    def test_no_1m_data_falls_back_to_raw_execution_price(self):
+        """Gap fallback should use raw execution price, not buy-cost-adjusted entry."""
+        execution_price = 100.0
+        entry_price_with_costs = 100.12
+        pt = 0.01
+        sl = 0.006
+        fee_bps = 10.0
+        slippage_bps = 2.0
+        entry_time = datetime(2024, 1, 1, 1, 0)
+
+        df_1m = pd.DataFrame(
+            columns=["open_time", "open", "high", "low", "close", "volume"]
+        )
+
+        exit_time, exit_price_net, exit_reason, gross_exit_price = simulate_barrier_exit(
+            df_1m=df_1m,
+            entry_time=entry_time,
+            execution_price=execution_price,
+            entry_price_with_costs=entry_price_with_costs,
+            pt=pt,
+            sl=sl,
+            max_hold_hours=12,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+        )
+
+        assert exit_reason == "TIMEOUT"
+        assert exit_time == entry_time
+        assert gross_exit_price == execution_price
+        assert exit_price_net == pytest.approx(
+            calculate_costs(execution_price, fee_bps, slippage_bps, is_buy=False),
+            rel=0.0001,
+        )
+
 
 class TestT1Execution:
     """Test T+1 execution logic."""
