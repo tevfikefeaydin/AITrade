@@ -403,7 +403,13 @@ class PaperTrader:
         }
         print(f"  -> SIGNAL ACCEPTED ({best_signal_type}) at threshold {threshold:.3f}, waiting for next bar (T+1)...")
 
-    async def _open_position(self, price: float, prob: float, signal_time: datetime):
+    async def _open_position(
+        self,
+        price: float,
+        prob: float,
+        signal_time: datetime,
+        execution_time: Optional[datetime] = None,
+    ):
         """Open a new paper trade position."""
         # Apply entry costs
         cost_mult = 1 + (self.fee_bps + self.slippage_bps) / 10000
@@ -414,13 +420,13 @@ class PaperTrader:
         tp_price, sl_price = compute_barrier_prices(
             price, self.pt, self.sl, atr_value=atr_value,
         )
-        now_utc = datetime.now(timezone.utc)
-        max_exit_time = now_utc + timedelta(hours=self.max_hold_hours)
+        entry_time = execution_time or datetime.now(timezone.utc)
+        max_exit_time = entry_time + timedelta(hours=self.max_hold_hours)
 
         position = {
             "symbol": self.symbol,
             "signal_time": signal_time,
-            "entry_time": now_utc,
+            "entry_time": entry_time,
             "entry_price": entry_price,
             "market_price": price,
             "tp_price": tp_price,
@@ -463,6 +469,7 @@ class PaperTrader:
                         execution_price,
                         self._pending_signal["prob"],
                         self._pending_signal["signal_time"],
+                        latest_bar["open_time"],
                     )
                     self._pending_signal = None
 
@@ -476,29 +483,61 @@ class PaperTrader:
             return
 
         current_bar = self.ws.buffer_1m[-1]
+        current_bar_time = current_bar["open_time"]
         current_high = current_bar["high"]
         current_low = current_bar["low"]
         current_close = current_bar["close"]
 
+        # Entry happens at this bar's open, so we cannot use the same bar's
+        # high/low/close for exits without introducing lookahead.
+        if current_bar_time <= pos["entry_time"]:
+            return
+
+        tp_hit = current_high >= pos["tp_price"]
+        sl_hit = current_low <= pos["sl_price"]
+
+        if tp_hit and sl_hit:
+            if current_close >= pos["market_price"]:
+                await self._close_position(
+                    pos, "TP", pos["tp_price"], exit_time=current_bar_time,
+                )
+            else:
+                await self._close_position(
+                    pos, "SL", pos["sl_price"], exit_time=current_bar_time,
+                )
+            return
+
         # Check take profit
-        if current_high >= pos["tp_price"]:
-            await self._close_position(pos, "TP", pos["tp_price"])
+        if tp_hit:
+            await self._close_position(
+                pos, "TP", pos["tp_price"], exit_time=current_bar_time,
+            )
             return
 
         # Check stop loss
-        if current_low <= pos["sl_price"]:
-            await self._close_position(pos, "SL", pos["sl_price"])
+        if sl_hit:
+            await self._close_position(
+                pos, "SL", pos["sl_price"], exit_time=current_bar_time,
+            )
             return
 
         # Check timeout
-        if datetime.now(timezone.utc) >= pos["max_exit_time"]:
+        if current_bar_time >= pos["max_exit_time"]:
             # Apply exit costs
             cost_mult = 1 - (self.fee_bps + self.slippage_bps) / 10000
             exit_price = current_close * cost_mult
-            await self._close_position(pos, "TIMEOUT", exit_price)
+            await self._close_position(
+                pos, "TIMEOUT", exit_price, exit_time=current_bar_time,
+            )
             return
 
-    async def _close_position(self, pos: dict, reason: str, exit_price: float):
+    async def _close_position(
+        self,
+        pos: dict,
+        reason: str,
+        exit_price: float,
+        exit_time: Optional[datetime] = None,
+    ):
         """Close a position and log results."""
         # Apply exit costs if TP/SL
         if reason in ["TP", "SL"]:
@@ -506,7 +545,9 @@ class PaperTrader:
             exit_price = exit_price * cost_mult
 
         # Close position
-        self.positions.close_position(pos, reason, exit_price)
+        self.positions.close_position(
+            pos, reason, exit_price, exit_time=exit_time,
+        )
 
         # Calculate P&L
         pnl_pct = pos["pnl_pct"]
