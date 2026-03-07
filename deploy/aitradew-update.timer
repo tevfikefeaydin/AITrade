@@ -1,0 +1,11 @@
+[Unit]
+Description=AITradew.AI Daily Data Update Timer
+
+[Timer]
+# Her gun 00:05 UTC'de calistir (gece yarisi sonrasi, gunluk mum kapandiktan sonra)
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

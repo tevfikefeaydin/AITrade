@@ -1,0 +1,4 @@
+# AITradew.AI - sudoers rules
+# Install: sudo cp deploy/aitradew-sudoers /etc/sudoers.d/aitradew
+# This allows the retrain script to restart the paper trader service without password
+aitradew ALL=(root) NOPASSWD: /usr/bin/systemctl restart aitradew-paper.service

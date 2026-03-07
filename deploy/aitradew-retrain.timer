@@ -1,0 +1,11 @@
+[Unit]
+Description=AITradew.AI Weekly Model Retrain Timer
+
+[Timer]
+# Her pazar 02:00 UTC'de calistir
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

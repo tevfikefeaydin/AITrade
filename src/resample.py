@@ -1,0 +1,271 @@
+"""
+Resampling module for ML-Assisted Crypto Trading Research Pipeline.
+
+Aggregates 1-minute klines to higher timeframes (1h, 4h) while preserving
+intrabar data needed for feature computation.
+"""
+
+import logging
+from typing import Dict, Tuple
+
+import pandas as pd
+import numpy as np
+
+from . import config
+
+logger = logging.getLogger(__name__)
+
+
+def resample_ohlcv(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """
+    Resample OHLCV data to a higher timeframe.
+
+    Args:
+        df: DataFrame with columns [open_time, open, high, low, close, volume]
+        interval: Target interval (e.g., "1h", "4h")
+
+    Returns:
+        Resampled DataFrame with same columns
+    """
+    if "open_time" not in df.columns:
+        raise ValueError("DataFrame must have 'open_time' column")
+
+    # Set index for resampling
+    df_indexed = df.set_index("open_time")
+
+    # Resample with proper OHLCV aggregation
+    agg_dict = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
+
+    # Only include columns that exist
+    agg_dict = {k: v for k, v in agg_dict.items() if k in df_indexed.columns}
+
+    resampled = df_indexed.resample(interval).agg(agg_dict)
+
+    # Drop rows with NaN (incomplete bars at edges)
+    resampled = resampled.dropna()
+
+    # Reset index to get open_time as column
+    resampled = resampled.reset_index()
+
+    logger.info(f"Resampled {len(df):,} rows to {len(resampled):,} {interval} bars")
+
+    return resampled
+
+
+def resample_1h(df_1m: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resample 1-minute data to 1-hour bars.
+
+    Args:
+        df_1m: 1-minute OHLCV DataFrame
+
+    Returns:
+        1-hour OHLCV DataFrame
+    """
+    return resample_ohlcv(df_1m, "1h")
+
+
+def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
+    """
+    Resample 1-hour data to 4-hour bars.
+
+    Args:
+        df_1h: 1-hour OHLCV DataFrame
+
+    Returns:
+        4-hour OHLCV DataFrame
+    """
+    return resample_ohlcv(df_1h, "4h")
+
+
+def compute_intrabar_features(df_1m: pd.DataFrame, df_1h: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute intrabar features from 1-minute data for each 1-hour bar.
+
+    For each 1h bar, we compute statistics from the 1m bars within that hour:
+    - max_runup: Maximum high relative to 1h open
+    - max_drawdown: Minimum low relative to 1h open
+    - intrabar_vol: Standard deviation of 1m log returns
+    - intrabar_skew: Skewness of 1m log returns
+    - up_down_ratio: Ratio of up moves to down moves
+
+    Args:
+        df_1m: 1-minute OHLCV DataFrame
+        df_1h: 1-hour OHLCV DataFrame
+
+    Returns:
+        DataFrame with 1h index and intrabar features
+    """
+    if len(df_1m) == 0 or len(df_1h) == 0:
+        return pd.DataFrame()
+
+    # Ensure open_time is datetime
+    df_1m = df_1m.copy()
+    df_1h = df_1h.copy()
+
+    if not pd.api.types.is_datetime64_any_dtype(df_1m["open_time"]):
+        df_1m["open_time"] = pd.to_datetime(df_1m["open_time"])
+    if not pd.api.types.is_datetime64_any_dtype(df_1h["open_time"]):
+        df_1h["open_time"] = pd.to_datetime(df_1h["open_time"])
+
+    # Add hour floor to 1m data for grouping
+    df_1m["hour_floor"] = df_1m["open_time"].dt.floor("1h")
+
+    # Compute 1m log returns
+    df_1m["log_ret"] = np.log(df_1m["close"] / df_1m["close"].shift(1))
+
+    # Group by hour
+    features_list = []
+
+    for _, hour_row in df_1h.iterrows():
+        hour_start = hour_row["open_time"]
+        hour_open = hour_row["open"]
+
+        # Get 1m bars within this hour
+        mask = df_1m["hour_floor"] == hour_start
+        hour_1m = df_1m.loc[mask]
+
+        if len(hour_1m) == 0:
+            features_list.append({
+                "open_time": hour_start,
+                "max_runup": 0.0,
+                "max_drawdown": 0.0,
+                "intrabar_vol": 0.0,
+                "intrabar_skew": 0.0,
+                "up_down_ratio": 0.5,
+            })
+            continue
+
+        # Max runup: highest high relative to hour open
+        max_high = hour_1m["high"].max()
+        max_runup = (max_high - hour_open) / hour_open if hour_open > 0 else 0.0
+
+        # Max drawdown: lowest low relative to hour open (negative value expected)
+        min_low = hour_1m["low"].min()
+        max_drawdown = (min_low - hour_open) / hour_open if hour_open > 0 else 0.0
+
+        # Intrabar volatility
+        log_rets = hour_1m["log_ret"].dropna()
+        intrabar_vol = log_rets.std() if len(log_rets) > 1 else 0.0
+
+        # Intrabar skewness
+        intrabar_skew = log_rets.skew() if len(log_rets) > 2 else 0.0
+
+        # Up/down ratio
+        up_count = (log_rets > 0).sum()
+        down_count = (log_rets < 0).sum()
+        total_moves = up_count + down_count
+        up_down_ratio = up_count / total_moves if total_moves > 0 else 0.5
+
+        features_list.append({
+            "open_time": hour_start,
+            "max_runup": max_runup,
+            "max_drawdown": max_drawdown,
+            "intrabar_vol": intrabar_vol if not np.isnan(intrabar_vol) else 0.0,
+            "intrabar_skew": intrabar_skew if not np.isnan(intrabar_skew) else 0.0,
+            "up_down_ratio": up_down_ratio,
+        })
+
+    df_features = pd.DataFrame(features_list)
+
+    logger.info(f"Computed intrabar features for {len(df_features):,} hourly bars")
+
+    return df_features
+
+
+def build_multi_timeframe_data(
+    df_1m: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Build all timeframe data from 1-minute source.
+
+    Args:
+        df_1m: 1-minute OHLCV DataFrame
+
+    Returns:
+        Tuple of (df_1m, df_1h, df_4h, df_intrabar_features)
+    """
+    logger.info("Building multi-timeframe data...")
+
+    # Resample to 1h
+    df_1h = resample_1h(df_1m)
+
+    # Resample to 4h
+    df_4h = resample_4h(df_1h)
+
+    # Compute intrabar features
+    df_intrabar = compute_intrabar_features(df_1m, df_1h)
+
+    logger.info(
+        f"Built: 1m={len(df_1m):,}, 1h={len(df_1h):,}, "
+        f"4h={len(df_4h):,}, intrabar={len(df_intrabar):,}"
+    )
+
+    return df_1m, df_1h, df_4h, df_intrabar
+
+
+def align_4h_to_1h(df_1h: pd.DataFrame, df_4h: pd.DataFrame) -> pd.DataFrame:
+    """
+    Forward-fill 4h data to align with 1h bars.
+
+    For each 1h bar, find the most recent completed 4h bar (no lookahead).
+
+    Args:
+        df_1h: 1-hour DataFrame with open_time
+        df_4h: 4-hour DataFrame with open_time
+
+    Returns:
+        DataFrame with 4h features aligned to 1h timestamps
+    """
+    df_1h = df_1h.copy()
+    df_4h = df_4h.copy()
+
+    # Ensure datetime
+    if not pd.api.types.is_datetime64_any_dtype(df_1h["open_time"]):
+        df_1h["open_time"] = pd.to_datetime(df_1h["open_time"])
+    if not pd.api.types.is_datetime64_any_dtype(df_4h["open_time"]):
+        df_4h["open_time"] = pd.to_datetime(df_4h["open_time"])
+
+    # For 4h bars, the bar is only "complete" at the close of that 4h period
+    # So we shift the 4h open_time forward by 4 hours to represent when the data is available
+    # Then use merge_asof to find the most recent completed 4h bar
+
+    df_4h_shifted = df_4h.copy()
+    df_4h_shifted["available_time"] = df_4h_shifted["open_time"] + pd.Timedelta(hours=4)
+
+    # Rename 4h columns to avoid conflicts
+    df_4h_shifted = df_4h_shifted.rename(columns={
+        "open": "open_4h",
+        "high": "high_4h",
+        "low": "low_4h",
+        "close": "close_4h",
+        "volume": "volume_4h",
+    })
+
+    # Sort both DataFrames
+    df_1h = df_1h.sort_values("open_time")
+    df_4h_shifted = df_4h_shifted.sort_values("available_time")
+
+    # Ensure same datetime resolution for merge_asof (pandas 2.x compat)
+    df_4h_shifted["available_time"] = df_4h_shifted["available_time"].astype(df_1h["open_time"].dtype)
+
+    # Merge: for each 1h bar, get the most recent 4h bar that was available
+    # The 1h bar at time T can see 4h data from bars that closed before T
+    merged = pd.merge_asof(
+        df_1h,
+        df_4h_shifted[["available_time", "open_4h", "high_4h", "low_4h", "close_4h", "volume_4h"]],
+        left_on="open_time",
+        right_on="available_time",
+        direction="backward",
+    )
+
+    # Drop the temporary column
+    merged = merged.drop(columns=["available_time"], errors="ignore")
+
+    return merged

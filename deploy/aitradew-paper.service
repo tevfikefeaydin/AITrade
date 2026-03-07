@@ -1,0 +1,37 @@
+[Unit]
+Description=AITradew.AI Paper Trading Bot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=aitradew
+Group=aitradew
+WorkingDirectory=/home/aitradew/app
+ExecStart=/home/aitradew/app/.venv/bin/python -m src.cli paper --all
+Restart=always
+RestartSec=30
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# Logging
+StandardOutput=append:/home/aitradew/logs/paper_trader.log
+StandardError=append:/home/aitradew/logs/paper_trader_error.log
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/aitradew/app/outputs /home/aitradew/app/data /home/aitradew/logs
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

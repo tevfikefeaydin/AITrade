@@ -1,0 +1,27 @@
+[Unit]
+Description=AITradew.AI Weekly Model Retrain
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aitradew
+Group=aitradew
+WorkingDirectory=/home/aitradew/app
+ExecStart=/home/aitradew/app/deploy/retrain.sh
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=append:/home/aitradew/logs/retrain.log
+StandardError=append:/home/aitradew/logs/retrain_error.log
+
+# Retrain can take longer
+TimeoutStartSec=1800
+
+# Security
+# NOTE: NoNewPrivileges=no required for sudo restart of paper trader in retrain.sh
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/aitradew/app/data /home/aitradew/app/models /home/aitradew/app/outputs /home/aitradew/logs
+PrivateTmp=yes

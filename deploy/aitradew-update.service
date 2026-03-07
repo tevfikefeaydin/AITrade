@@ -1,0 +1,23 @@
+[Unit]
+Description=AITradew.AI Daily Data Update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aitradew
+Group=aitradew
+WorkingDirectory=/home/aitradew/app
+ExecStart=/home/aitradew/app/deploy/update_data.sh
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=append:/home/aitradew/logs/update_data.log
+StandardError=append:/home/aitradew/logs/update_data_error.log
+
+# Security
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/aitradew/app/data /home/aitradew/app/models /home/aitradew/app/outputs /home/aitradew/logs
+PrivateTmp=yes

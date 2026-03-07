@@ -1,8 +1,17 @@
-# AITrade .gitignore
+# Data files (can be large)
+data/
+*.parquet
+*.csv
 
-# ========================================
+# Model files
+models/
+*.pkl
+*.joblib
+
+# Output files
+outputs/
+
 # Python
-# ========================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,85 +33,36 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 ENV/
 env/
 .venv/
 
-# ========================================
 # IDE
-# ========================================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
 
-# ========================================
-# Environment & Secrets
-# ========================================
-.env
-.env.local
-.env.*.local
-*.pem
-*.key
-secrets/
+# Jupyter
+.ipynb_checkpoints/
 
-# ========================================
-# Logs
-# ========================================
-logs/
-*.log
-npm-debug.log*
-
-# ========================================
-# Testing
-# ========================================
-.coverage
-htmlcov/
-.tox/
-.pytest_cache/
-.mypy_cache/
-
-# ========================================
-# ML Models (büyük dosyalar)
-# ========================================
-models/*.pkl
-models/*.h5
-models/*.pt
-!models/.gitkeep
-
-# ========================================
-# Data
-# ========================================
-data/*.csv
-data/*.parquet
-data/*.json
-!data/.gitkeep
-
-# ========================================
 # OS
-# ========================================
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# ========================================
-# Node (frontend için)
-# ========================================
-node_modules/
-.next/
-out/
-.nuxt/
+# Logs
+*.log
 
-# ========================================
-# Misc
-# ========================================
-*.bak
-*.tmp
-*.temp
-.cache/
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local workspace artifacts
+.claude/
+.tmp_pytest/
+.tmp_pytest_run_*/
+nul
