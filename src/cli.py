@@ -8,10 +8,11 @@ Commands:
 - backtest: Run realistic backtest with costs
 
 Usage:
-    python -m src.cli download [--start 2024-01-01] [--end 2025-12-31]
+    python -m src.cli download [--start YYYY-MM-DD] [--end YYYY-MM-DD]
     python -m src.cli build
-    python -m src.cli train --out models/ --train_window_days 540 --test_window_days 60
-    python -m src.cli backtest --models_dir models/ --fee_bps 10 --slippage_bps 2 --prob_threshold 0.55 --pt 0.008 --sl 0.006 --max_hold 12
+    python -m src.cli train [--train_window_days N] [--test_window_days N]
+    python -m src.cli backtest [--prob_threshold P] [--fee_bps F] [--slippage_bps S]
+    python -m src.cli paper [--symbol SYMBOL | --all]
 """
 
 import argparse
@@ -322,14 +323,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="ML-Assisted Crypto Trading Research Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   python -m src.cli download                    # Smart download (only missing data)
   python -m src.cli download --force            # Force re-download all data
   python -m src.cli download --start 2023-01-01 # Expand date range
   python -m src.cli build
-  python -m src.cli train --train_window_days 540 --test_window_days 60
-  python -m src.cli backtest --prob_threshold 0.55 --fee_bps 10
+  python -m src.cli train --train_window_days {config.DEFAULT_TRAIN_WINDOW_DAYS} --test_window_days {config.DEFAULT_TEST_WINDOW_DAYS}
+  python -m src.cli backtest --prob_threshold {config.DEFAULT_PROB_THRESHOLD} --fee_bps {config.DEFAULT_FEE_BPS}
 
 Note: This is an educational project. No trading strategy guarantees profits.
 
@@ -382,12 +383,6 @@ Paper Trading:
         help="Train ML models with walk-forward validation",
     )
     train_parser.add_argument(
-        "--out",
-        type=str,
-        default="models/",
-        help="Output directory for models",
-    )
-    train_parser.add_argument(
         "--train_window_days",
         type=int,
         default=config.DEFAULT_TRAIN_WINDOW_DAYS,
@@ -404,12 +399,6 @@ Paper Trading:
     backtest_parser = subparsers.add_parser(
         "backtest",
         help="Run realistic backtest with costs",
-    )
-    backtest_parser.add_argument(
-        "--models_dir",
-        type=str,
-        default="models/",
-        help="Directory containing trained models",
     )
     backtest_parser.add_argument(
         "--fee_bps",

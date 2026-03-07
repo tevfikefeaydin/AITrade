@@ -38,13 +38,13 @@ pip install -r requirements.txt
 python -m src.cli download
 
 # 2. Build features and label candidates
-python -m src.cli build --bar_interval 1h
+python -m src.cli build
 
 # 3. Train models with walk-forward validation
-python -m src.cli train --train_window_days 540 --test_window_days 60
+python -m src.cli train --train_window_days 270 --test_window_days 60
 
 # 4. Run backtest with ML filter
-python -m src.cli backtest --prob_threshold 0.55 --fee_bps 10 --slippage_bps 2
+python -m src.cli backtest --prob_threshold 0.50 --fee_bps 10 --slippage_bps 2
 ```
 
 ### Smart Download Feature
@@ -139,7 +139,7 @@ For each candidate entry at time t:
 ### Walk-Forward Training
 
 - **No shuffle**: Respects temporal order
-- **Rolling window**: Train on 540 days, test on 60 days, step forward
+- **Rolling window**: Train on 270 days, test on 60 days, step forward
 - **Per-fold metrics**: AUC, log loss
 - **Final model**: Trained on all data
 
@@ -161,14 +161,14 @@ For each candidate entry at time t:
 python -m src.cli download [--start YYYY-MM-DD] [--end YYYY-MM-DD]
 
 # Examples:
-python -m src.cli download  # Uses default range (2024-01-01 to 2025-12-31)
+python -m src.cli download  # Uses default range (2024-01-01 to today)
 python -m src.cli download --start 2023-01-01 --end 2024-12-31
 ```
 
 ### Build Features
 
 ```bash
-python -m src.cli build --bar_interval 1h
+python -m src.cli build
 ```
 
 ### Train Models
@@ -177,7 +177,7 @@ python -m src.cli build --bar_interval 1h
 python -m src.cli train [options]
 
 Options:
-  --train_window_days INT   Training window (default: 540)
+  --train_window_days INT   Training window (default: 270)
   --test_window_days INT    Test window per fold (default: 60)
 ```
 
@@ -187,7 +187,7 @@ Options:
 python -m src.cli backtest [options]
 
 Options:
-  --prob_threshold FLOAT    Min probability to take trade (default: 0.55)
+  --prob_threshold FLOAT    Min probability to take trade (default: 0.50)
   --fee_bps FLOAT          Trading fee in basis points (default: 10)
   --slippage_bps FLOAT     Slippage in basis points (default: 2)
   --pt FLOAT               Take-profit percentage (default: 0.008)
@@ -195,11 +195,26 @@ Options:
   --max_hold INT           Max holding period in hours (default: 12)
 ```
 
+### Paper Trading
+
+```bash
+python -m src.cli paper [options]
+
+Options:
+  --symbol SYMBOL                 Trading symbol (default: BTCUSDT)
+  --all                           Run paper trading for all configured symbols
+  --prob_threshold FLOAT          Min probability to take trade (default: 0.50)
+  --adx_min_threshold FLOAT       Minimum ADX filter threshold
+  --[no-]soft_guard               Enable/disable soft guardrail mode
+  --guard_threshold_bonus FLOAT   Extra probability threshold in guard mode
+  --guard_cooldown_minutes INT    Entry cooldown during guard mode
+```
+
 ## Important Considerations
 
 ### Data Size Warning
 
-1-minute data is large. The default date range (2024-01-01 to 2025-12-31) downloads approximately:
+1-minute data is large. The default date range (2024-01-01 to today) downloads approximately:
 - ~1M rows per symbol per year
 - ~100MB per symbol in Parquet format
 
