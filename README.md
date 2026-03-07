@@ -8,10 +8,10 @@ An educational project for building and backtesting ML-assisted trading strategi
 
 This pipeline implements a meta-labeling approach to trading:
 
-1. **Candidate Generator**: Trend-following breakout signals with higher timeframe (4h) filter
-2. **Triple-Barrier Labeling**: Labels trades as successful (TP hit) or not (SL hit / timeout)
-3. **ML Meta-Filter**: Predicts probability of trade success using features
-4. **Realistic Backtesting**: T+1 execution, fees, slippage, and barrier fill using 1m data
+1. **Candidate Generator**: Multi-signal entries (breakout, mean-reversion, volume-spike) with higher timeframe context
+2. **Triple-Barrier Labeling**: TP/SL with fractional timeout labels based on realized exit location
+3. **ML Meta-Filter**: Predicts probability of trade success using offline/live-aligned features
+4. **Realistic Backtesting**: T+1 execution, fees, slippage, and 1m barrier fill logic
 
 ## Quick Start
 
@@ -38,13 +38,13 @@ pip install -r requirements.txt
 python -m src.cli download
 
 # 2. Build features and label candidates
-python -m src.cli build --bar_interval 1h
+python -m src.cli build
 
 # 3. Train models with walk-forward validation
-python -m src.cli train --train_window_days 540 --test_window_days 60
+python -m src.cli train --train_window_days 270 --test_window_days 60
 
 # 4. Run backtest with ML filter
-python -m src.cli backtest --prob_threshold 0.55 --fee_bps 10 --slippage_bps 2
+python -m src.cli backtest --prob_threshold 0.50 --fee_bps 10 --slippage_bps 2
 ```
 
 ### Smart Download Feature
@@ -99,9 +99,10 @@ models/
 
 ### Signal Generation
 
-**Entry Signal** (Trend-Following Breakout with HTF Filter):
-- 1h close breaks above N-bar rolling high (N=20)
-- AND 4h close > 4h MA(50) [bullish trend filter]
+**Entry Signals**:
+- **Breakout**: 1h close breaks above rolling high with 4h trend confirmation and ADX filter
+- **Mean-Reversion**: Oversold pullback with lower-wick rejection and trend/regime guard
+- **Volume-Spike**: Bullish impulse bar with abnormal volume and trend support
 
 **Exit Conditions**:
 - Take-profit: +0.8% (configurable)
@@ -134,14 +135,16 @@ All features are computed using only data available at the time of the signal:
 For each candidate entry at time t:
 1. Look forward in 1m data for up to `max_hold` hours
 2. If TP barrier hit first -> label = 1 (success)
-3. If SL barrier hit first OR timeout -> label = 0 (failure)
+3. If SL barrier hit first -> label = 0 (failure)
+4. If timeout occurs, assign a fractional label based on the exit return's position between SL and TP
 
 ### Walk-Forward Training
 
 - **No shuffle**: Respects temporal order
-- **Rolling window**: Train on 540 days, test on 60 days, step forward
+- **Rolling window**: Train on 270 days, test on 60 days, step forward
 - **Per-fold metrics**: AUC, log loss
-- **Final model**: Trained on all data
+- **OOS predictions**: Saved per fold for honest backtests
+- **Final model**: Trained on all data for paper trading
 
 ### Realistic Backtesting
 
@@ -161,14 +164,14 @@ For each candidate entry at time t:
 python -m src.cli download [--start YYYY-MM-DD] [--end YYYY-MM-DD]
 
 # Examples:
-python -m src.cli download  # Uses default range (2024-01-01 to 2025-12-31)
+python -m src.cli download  # Uses default range (2024-01-01 to today)
 python -m src.cli download --start 2023-01-01 --end 2024-12-31
 ```
 
 ### Build Features
 
 ```bash
-python -m src.cli build --bar_interval 1h
+python -m src.cli build
 ```
 
 ### Train Models
@@ -177,7 +180,7 @@ python -m src.cli build --bar_interval 1h
 python -m src.cli train [options]
 
 Options:
-  --train_window_days INT   Training window (default: 540)
+  --train_window_days INT   Training window (default: 270)
   --test_window_days INT    Test window per fold (default: 60)
 ```
 
@@ -187,7 +190,7 @@ Options:
 python -m src.cli backtest [options]
 
 Options:
-  --prob_threshold FLOAT    Min probability to take trade (default: 0.55)
+  --prob_threshold FLOAT    Min probability to take trade (default: 0.50)
   --fee_bps FLOAT          Trading fee in basis points (default: 10)
   --slippage_bps FLOAT     Slippage in basis points (default: 2)
   --pt FLOAT               Take-profit percentage (default: 0.008)
@@ -199,7 +202,7 @@ Options:
 
 ### Data Size Warning
 
-1-minute data is large. The default date range (2024-01-01 to 2025-12-31) downloads approximately:
+1-minute data is large. The default date range starts at 2024-01-01 and runs to today, which typically means:
 - ~1M rows per symbol per year
 - ~100MB per symbol in Parquet format
 

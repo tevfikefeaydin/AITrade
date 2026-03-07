@@ -503,6 +503,7 @@ def test_paper_trader_pending_signal_skips_stale_bar():
                     execution_price,
                     trader._pending_signal["prob"],
                     trader._pending_signal["signal_time"],
+                    latest_bar["open_time"],
                 )
                 trader._pending_signal = None
 
@@ -519,8 +520,131 @@ def test_paper_trader_pending_signal_skips_stale_bar():
     asyncio.run(_run_one_tick())
 
     # NOW it should have executed on the new bar's open price
-    trader._open_position.assert_called_once_with(50100.0, 0.7, datetime(2024, 6, 1, 14, 0))
+    trader._open_position.assert_called_once_with(
+        50100.0,
+        0.7,
+        datetime(2024, 6, 1, 14, 0),
+        new_bar_time,
+    )
     assert trader._pending_signal is None  # consumed
+
+
+def test_paper_trader_open_uses_execution_bar_time():
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.symbol = "BTCUSDT"
+    trader.fee_bps = 10.0
+    trader.slippage_bps = 2.0
+    trader.pt = 0.008
+    trader.sl = 0.006
+    trader.max_hold_hours = 12
+    trader.guard_cooldown_minutes = 180
+    trader.positions = MagicMock()
+    trader.features = MagicMock()
+    trader.features.get_latest_atr.return_value = None
+    trader._is_guard_active = MagicMock(return_value=False)
+    trader._save_guard_state = MagicMock()
+
+    signal_time = datetime(2024, 6, 1, 14, 0, tzinfo=timezone.utc)
+    execution_time = datetime(2024, 6, 1, 15, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        trader._open_position(
+            price=50000.0,
+            prob=0.72,
+            signal_time=signal_time,
+            execution_time=execution_time,
+        )
+    )
+
+    position = trader.positions.add.call_args.args[0]
+    assert position["entry_time"] == execution_time
+    assert position["max_exit_time"] == execution_time + timedelta(hours=12)
+
+
+def test_paper_trader_exit_skips_entry_bar():
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.ws = MagicMock()
+    trader._close_position = AsyncMock()
+
+    entry_time = datetime(2024, 6, 1, 15, 0, tzinfo=timezone.utc)
+    trader.ws.buffer_1m = [{
+        "open_time": entry_time,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+    }]
+
+    pos = {
+        "entry_time": entry_time,
+        "market_price": 100.0,
+        "tp_price": 100.8,
+        "sl_price": 99.4,
+        "max_exit_time": entry_time + timedelta(hours=12),
+    }
+
+    asyncio.run(trader._check_position_exit(pos))
+    trader._close_position.assert_not_called()
+
+
+def test_paper_trader_both_hit_uses_backtest_heuristic():
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.ws = MagicMock()
+    trader._close_position = AsyncMock()
+    trader.fee_bps = 10.0
+    trader.slippage_bps = 2.0
+
+    entry_time = datetime(2024, 6, 1, 15, 0, tzinfo=timezone.utc)
+    exit_bar_time = entry_time + timedelta(minutes=1)
+    trader.ws.buffer_1m = [{
+        "open_time": exit_bar_time,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 99.2,
+    }]
+
+    pos = {
+        "entry_time": entry_time,
+        "market_price": 100.0,
+        "tp_price": 100.8,
+        "sl_price": 99.4,
+        "max_exit_time": entry_time + timedelta(hours=12),
+    }
+
+    asyncio.run(trader._check_position_exit(pos))
+    trader._close_position.assert_called_once_with(
+        pos, "SL", 99.4, exit_time=exit_bar_time,
+    )
+
+
+def test_paper_trader_timeout_uses_bar_time_not_wall_clock():
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.ws = MagicMock()
+    trader._close_position = AsyncMock()
+    trader.fee_bps = 10.0
+    trader.slippage_bps = 2.0
+
+    entry_time = datetime(2024, 6, 1, 15, 0, tzinfo=timezone.utc)
+    timeout_bar_time = entry_time + timedelta(hours=12)
+    trader.ws.buffer_1m = [{
+        "open_time": timeout_bar_time,
+        "high": 100.2,
+        "low": 99.8,
+        "close": 100.1,
+    }]
+
+    pos = {
+        "entry_time": entry_time,
+        "market_price": 100.0,
+        "tp_price": 101.0,
+        "sl_price": 99.0,
+        "max_exit_time": timeout_bar_time,
+    }
+
+    asyncio.run(trader._check_position_exit(pos))
+    expected_exit_price = 100.1 * (1 - (trader.fee_bps + trader.slippage_bps) / 10000)
+    trader._close_position.assert_called_once_with(
+        pos, "TIMEOUT", expected_exit_price, exit_time=timeout_bar_time,
+    )
 
 
 # ---------------------------------------------------------------------------
