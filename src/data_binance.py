@@ -163,7 +163,7 @@ def download_klines(
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
-    for col in ["open", "high", "low", "close", "volume", "quote_volume"]:
+    for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
         df[col] = df[col].astype(float)
 
     # Sort and remove duplicates
@@ -171,7 +171,7 @@ def download_klines(
     df = df.reset_index(drop=True)
 
     # Keep only essential columns
-    df = df[["open_time", "open", "high", "low", "close", "volume", "close_time"]]
+    df = df[["open_time", "open", "high", "low", "close", "volume", "taker_buy_base", "close_time"]]
 
     # Check for gaps
     gaps = check_gaps(df, interval)
@@ -452,11 +452,11 @@ def _download_range(
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
-    for col in ["open", "high", "low", "close", "volume", "quote_volume"]:
+    for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
         df[col] = df[col].astype(float)
 
     df = df.sort_values("open_time").drop_duplicates(subset=["open_time"])
-    df = df[["open_time", "open", "high", "low", "close", "volume", "close_time"]]
+    df = df[["open_time", "open", "high", "low", "close", "volume", "taker_buy_base", "close_time"]]
 
     return df
 

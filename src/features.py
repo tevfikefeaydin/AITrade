@@ -372,12 +372,173 @@ def compute_4h_context_features(
     return df_merged
 
 
+def compute_taker_buy_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute taker buy ratio feature.
+
+    NO LOOKAHEAD: Uses current bar's taker_buy_base and volume only.
+
+    Args:
+        df: DataFrame with taker_buy_base and volume columns
+
+    Returns:
+        DataFrame with taker_buy_ratio added
+    """
+    df = df.copy()
+    if "taker_buy_base" in df.columns:
+        df["taker_buy_ratio"] = safe_divide(df["taker_buy_base"], df["volume"], 0.5)
+    else:
+        df["taker_buy_ratio"] = 0.5
+    return df
+
+
+def compute_regime_features(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
+    """
+    Compute market regime features: rolling Sharpe and Bollinger Band width.
+
+    NO LOOKAHEAD: Both features use backward-looking rolling windows.
+
+    Args:
+        df: DataFrame with ret_1 and close columns
+        window: Rolling window size (default 20)
+
+    Returns:
+        DataFrame with rolling_sharpe_20 and bb_width added
+    """
+    df = df.copy()
+
+    if "ret_1" not in df.columns:
+        df["ret_1"] = np.log(df["close"] / df["close"].shift(1))
+
+    # Rolling Sharpe: mean(ret_1) / std(ret_1) over window
+    roll_mean = df["ret_1"].rolling(window=window, min_periods=window).mean()
+    roll_std = df["ret_1"].rolling(window=window, min_periods=window).std()
+    df["rolling_sharpe_20"] = safe_divide(roll_mean, roll_std, 0.0)
+
+    # Bollinger Band width: 2 * rolling_std(close) / rolling_mean(close)
+    close_mean = df["close"].rolling(window=window, min_periods=window).mean()
+    close_std = df["close"].rolling(window=window, min_periods=window).std()
+    df["bb_width"] = safe_divide(2 * close_std, close_mean, 0.0)
+
+    return df
+
+
+def compute_stoch_rsi(df: pd.DataFrame, rsi_period: int = 14, stoch_period: int = 14) -> pd.DataFrame:
+    """
+    Compute Stochastic RSI.
+
+    NO LOOKAHEAD: Uses backward-looking rolling min/max of RSI.
+
+    Args:
+        df: DataFrame with rsi column
+        rsi_period: RSI lookback (used if rsi column missing)
+        stoch_period: Stochastic lookback window
+
+    Returns:
+        DataFrame with stoch_rsi added
+    """
+    df = df.copy()
+
+    if "rsi" not in df.columns:
+        df = compute_rsi(df, period=rsi_period)
+
+    rsi_min = df["rsi"].rolling(window=stoch_period, min_periods=stoch_period).min()
+    rsi_max = df["rsi"].rolling(window=stoch_period, min_periods=stoch_period).max()
+    df["stoch_rsi"] = safe_divide(df["rsi"] - rsi_min, rsi_max - rsi_min, 0.5)
+
+    return df
+
+
+def compute_macd_hist(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    """
+    Compute MACD histogram.
+
+    NO LOOKAHEAD: EMA is a causal filter (backward-looking only).
+
+    Args:
+        df: DataFrame with close column
+        fast: Fast EMA period
+        slow: Slow EMA period
+        signal: Signal line EMA period
+
+    Returns:
+        DataFrame with macd_hist added
+    """
+    df = df.copy()
+
+    ema_fast = df["close"].ewm(span=fast, min_periods=fast, adjust=False).mean()
+    ema_slow = df["close"].ewm(span=slow, min_periods=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, min_periods=signal, adjust=False).mean()
+    df["macd_hist"] = macd_line - signal_line
+
+    return df
+
+
+def compute_cross_asset_features(
+    df_target: pd.DataFrame,
+    df_reference: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compute cross-asset features from a reference symbol (e.g. BTC for ETH).
+
+    NO LOOKAHEAD: Uses merge_asof backward direction with reference data that
+    is available at each target bar's open_time.
+
+    For self-reference (e.g. BTC using BTC), fills with 0.0.
+
+    Args:
+        df_target: Target symbol 1h DataFrame with open_time
+        df_reference: Reference symbol 1h DataFrame with open_time, close, volume
+
+    Returns:
+        DataFrame with btc_ret_1 and btc_volume_zscore added
+    """
+    df_target = df_target.copy()
+
+    if df_reference is None:
+        # Self-reference: fill with 0
+        df_target["btc_ret_1"] = 0.0
+        df_target["btc_volume_zscore"] = 0.0
+        return df_target
+
+    df_ref = df_reference.copy()
+
+    # Compute reference features
+    df_ref["btc_ret_1"] = np.log(df_ref["close"] / df_ref["close"].shift(1))
+    window = config.FEATURE_ROLLING_WINDOW
+    vol_mean = df_ref["volume"].rolling(window=window, min_periods=window).mean()
+    vol_std = df_ref["volume"].rolling(window=window, min_periods=window).std()
+    df_ref["btc_volume_zscore"] = safe_divide(df_ref["volume"] - vol_mean, vol_std, 0.0)
+
+    # Sort for merge_asof
+    df_target = df_target.sort_values("open_time")
+    df_ref = df_ref.sort_values("open_time")
+
+    # Ensure same datetime resolution (pandas 2.x compat)
+    df_ref["open_time"] = df_ref["open_time"].astype(df_target["open_time"].dtype)
+
+    df_target = pd.merge_asof(
+        df_target,
+        df_ref[["open_time", "btc_ret_1", "btc_volume_zscore"]],
+        on="open_time",
+        direction="backward",
+    )
+
+    # Fill NaN from early rows
+    df_target["btc_ret_1"] = df_target["btc_ret_1"].fillna(0.0)
+    df_target["btc_volume_zscore"] = df_target["btc_volume_zscore"].fillna(0.0)
+
+    return df_target
+
+
 def build_features(
     df_1m: pd.DataFrame,
     df_1h: pd.DataFrame,
     df_4h: pd.DataFrame,
     rolling_window: int = None,
     ma_length: int = None,
+    df_reference_1h: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Build complete feature set from multi-timeframe data.
@@ -391,6 +552,8 @@ def build_features(
         df_4h: 4-hour OHLCV DataFrame
         rolling_window: Rolling window for various features
         ma_length: MA length for trend filter
+        df_reference_1h: Reference symbol 1h data for cross-asset features
+                         (None for self-reference, e.g. BTC)
 
     Returns:
         DataFrame with all features (indexed by 1h open_time)
@@ -458,6 +621,26 @@ def build_features(
         df["rsi_slope"] = df["rsi"] - df["rsi"].shift(3)
     logger.info("  - Computed RSI slope feature")
 
+    # 13. Taker buy ratio (current bar only — no lookahead)
+    df = compute_taker_buy_features(df)
+    logger.info("  - Computed taker buy ratio feature")
+
+    # 14. Regime features: rolling Sharpe and BB width (backward-looking rolling)
+    df = compute_regime_features(df, window=rolling_window)
+    logger.info("  - Computed regime features (rolling_sharpe_20, bb_width)")
+
+    # 15. Stochastic RSI (backward-looking rolling min/max of RSI)
+    df = compute_stoch_rsi(df)
+    logger.info("  - Computed stochastic RSI feature")
+
+    # 16. MACD histogram (causal EMA — backward-looking)
+    df = compute_macd_hist(df)
+    logger.info("  - Computed MACD histogram feature")
+
+    # 17. Cross-asset features (BTC as reference for ETH, self-ref → 0)
+    df = compute_cross_asset_features(df, df_reference_1h)
+    logger.info("  - Computed cross-asset features (btc_ret_1, btc_volume_zscore)")
+
     # Fill any remaining NaN with 0 (for early bars without enough history)
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     df[numeric_cols] = df[numeric_cols].fillna(0)
@@ -491,9 +674,12 @@ def get_feature_columns() -> list:
         "rsi",
         "rsi_slope",
         "ma_gap",
+        "stoch_rsi",
+        "macd_hist",
         # Volume
         "volume_zscore",
         "volume_ratio",
+        "taker_buy_ratio",
         # Intrabar
         "max_runup",
         "max_drawdown",
@@ -505,6 +691,11 @@ def get_feature_columns() -> list:
         "ma_slope_4h",
         # Market regime
         "atr_ratio",
+        "rolling_sharpe_20",
+        "bb_width",
+        # Cross-asset
+        "btc_ret_1",
+        "btc_volume_zscore",
         # Time cyclical
         "hour_sin",
         "hour_cos",

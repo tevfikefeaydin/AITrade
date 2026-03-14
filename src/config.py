@@ -82,10 +82,13 @@ DEFAULT_MAX_HOLD: int = 12  # Maximum holding period in 1h bars
 
 # ATR-Based Dynamic Barriers
 USE_ATR_BARRIERS: bool = True
-TP_ATR_MULTIPLIER: float = 2.0  # TP = entry + ATR_14 * 2.0
-SL_ATR_MULTIPLIER: float = 1.5  # SL = entry - ATR_14 * 1.5  (gross R:R = 1.33:1)
-MIN_BARRIER_PCT: float = 0.008  # Floor: 0.8% (barriers never narrower than this — costs eat too much below this)
+TP_ATR_MULTIPLIER: float = 2.5  # TP = entry + ATR_14 * 2.5
+SL_ATR_MULTIPLIER: float = 1.0  # SL = entry - ATR_14 * 1.0  (gross R:R = 2.5:1)
+MIN_BARRIER_PCT: float = 0.012  # Floor: 1.2% (barriers never narrower than this — costs eat too much below this)
 MAX_BARRIER_PCT: float = 0.030  # Ceiling: 3.0% (barriers never wider than this)
+
+# Cost-Aware Labeling: add round-trip cost to TP target so label=1 means net-profitable
+COST_AWARE_LABELING: bool = True
 
 # =============================================================================
 # COST MODEL PARAMETERS
@@ -132,8 +135,39 @@ LGBM_PARAMS = {
     "reg_lambda": 1.0,
 }
 
+# XGBoost parameters (used in ensemble mode)
+XGBM_PARAMS = {
+    "objective": "binary:logistic",
+    "eval_metric": "auc",
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "n_estimators": 500,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 20,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.0,
+    "random_state": 42,
+    "verbosity": 0,
+}
+
+# Ensemble configuration
+USE_ENSEMBLE: bool = True
+
 # Feature pruning: drop features with < this % of total importance
 FEATURE_MIN_IMPORTANCE_PCT: float = 1.0
+
+# =============================================================================
+# WALK-FORWARD IMPROVEMENTS
+# =============================================================================
+PURGE_GAP_HOURS: int = 12  # Gap between train end and test start to prevent leakage
+USE_EXPANDING_WINDOW: bool = False  # When True, train_start is always data start
+
+# =============================================================================
+# OPTUNA HYPERPARAMETER OPTIMIZATION
+# =============================================================================
+OPTUNA_N_TRIALS: int = 50
+OPTUNA_TIMEOUT_SECONDS: int = 3600  # 1 hour max
 
 # =============================================================================
 # FEATURE CONFIGURATION
@@ -171,6 +205,11 @@ def get_symbol_model_path(symbol: str) -> Path:
 def get_symbol_oos_path(symbol: str) -> Path:
     """Get the path for a symbol's out-of-sample predictions."""
     return DATA_DIR / f"{symbol}_oos_predictions.parquet"
+
+
+def get_symbol_best_params_path(symbol: str) -> Path:
+    """Get the path for a symbol's Optuna best hyperparameters."""
+    return MODELS_DIR / f"{symbol}_best_params.json"
 
 
 def get_symbol_output_paths(symbol: str) -> dict:

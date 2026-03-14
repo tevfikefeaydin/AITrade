@@ -23,6 +23,9 @@ from src.features import (
     compute_rsi,
     compute_ma_features,
     compute_volume_features,
+    compute_regime_features,
+    compute_stoch_rsi,
+    compute_macd_hist,
     build_features,
 )
 from src.resample import resample_1h, resample_4h
@@ -235,6 +238,102 @@ class TestNoLookahead:
                 )
 
 
+    def test_rolling_sharpe_no_lookahead(self):
+        """Test that rolling_sharpe_20 doesn't look ahead."""
+        df = create_synthetic_1h_data(100)
+        df = compute_return_features(df)
+
+        df_full = compute_regime_features(df.copy(), window=20)
+
+        for t in [50, 60, 70, 80]:
+            df_truncated = compute_regime_features(df.iloc[:t].copy(), window=20)
+
+            col = "rolling_sharpe_20"
+            full_vals = df_full[col].iloc[:t].values
+            trunc_vals = df_truncated[col].values
+
+            mask = ~np.isnan(full_vals) & ~np.isnan(trunc_vals)
+
+            if mask.sum() > 0:
+                np.testing.assert_array_almost_equal(
+                    full_vals[mask],
+                    trunc_vals[mask],
+                    decimal=10,
+                    err_msg=f"Lookahead detected in {col} at t={t}",
+                )
+
+    def test_bb_width_no_lookahead(self):
+        """Test that bb_width doesn't look ahead."""
+        df = create_synthetic_1h_data(100)
+        df = compute_return_features(df)
+
+        df_full = compute_regime_features(df.copy(), window=20)
+
+        for t in [50, 60, 70, 80]:
+            df_truncated = compute_regime_features(df.iloc[:t].copy(), window=20)
+
+            col = "bb_width"
+            full_vals = df_full[col].iloc[:t].values
+            trunc_vals = df_truncated[col].values
+
+            mask = ~np.isnan(full_vals) & ~np.isnan(trunc_vals)
+
+            if mask.sum() > 0:
+                np.testing.assert_array_almost_equal(
+                    full_vals[mask],
+                    trunc_vals[mask],
+                    decimal=10,
+                    err_msg=f"Lookahead detected in {col} at t={t}",
+                )
+
+    def test_stoch_rsi_no_lookahead(self):
+        """Test that stoch_rsi doesn't look ahead."""
+        df = create_synthetic_1h_data(100)
+        df = compute_rsi(df)
+
+        df_full = compute_stoch_rsi(df.copy())
+
+        for t in [50, 60, 70, 80]:
+            df_truncated = compute_stoch_rsi(df.iloc[:t].copy())
+
+            col = "stoch_rsi"
+            full_vals = df_full[col].iloc[:t].values
+            trunc_vals = df_truncated[col].values
+
+            mask = ~np.isnan(full_vals) & ~np.isnan(trunc_vals)
+
+            if mask.sum() > 0:
+                np.testing.assert_array_almost_equal(
+                    full_vals[mask],
+                    trunc_vals[mask],
+                    decimal=8,
+                    err_msg=f"Lookahead detected in {col} at t={t}",
+                )
+
+    def test_macd_hist_no_lookahead(self):
+        """Test that macd_hist doesn't look ahead."""
+        df = create_synthetic_1h_data(100)
+
+        df_full = compute_macd_hist(df.copy())
+
+        for t in [50, 60, 70, 80]:
+            df_truncated = compute_macd_hist(df.iloc[:t].copy())
+
+            col = "macd_hist"
+            full_vals = df_full[col].iloc[:t].values
+            trunc_vals = df_truncated[col].values
+
+            mask = ~np.isnan(full_vals) & ~np.isnan(trunc_vals)
+
+            if mask.sum() > 0:
+                np.testing.assert_array_almost_equal(
+                    full_vals[mask],
+                    trunc_vals[mask],
+                    decimal=8,
+                    err_msg=f"Lookahead detected in {col} at t={t}",
+                )
+
+
 class TestFeatureConsistency:
     """Test feature computation consistency."""
 
@@ -315,10 +414,10 @@ class TestNewFeatures:
         assert all(df["hour_sin"].between(-1, 1))
         assert all(df["hour_cos"].between(-1, 1))
 
-    def test_feature_count_is_27(self):
-        """get_feature_columns should return 27 features (removed raw wicks, added dow/rsi_slope)."""
+    def test_feature_count_is_34(self):
+        """get_feature_columns should return 34 features (27 + 7 new: taker_buy_ratio, btc_ret_1, btc_volume_zscore, rolling_sharpe_20, bb_width, stoch_rsi, macd_hist)."""
         from src.features import get_feature_columns
-        assert len(get_feature_columns()) == 27
+        assert len(get_feature_columns()) == 34
 
     def test_build_features_has_new_columns(self):
         """build_features output should include all new feature columns."""
@@ -328,7 +427,11 @@ class TestNewFeatures:
         df_1h = resample_1h(df_1m)
         df_4h = resample_4h(df_1h)
         df = build_features(df_1m, df_1h, df_4h)
-        for col in ["volume_ratio", "atr_ratio", "ret_24", "hour_sin", "hour_cos"]:
+        for col in [
+            "volume_ratio", "atr_ratio", "ret_24", "hour_sin", "hour_cos",
+            "taker_buy_ratio", "rolling_sharpe_20", "bb_width",
+            "stoch_rsi", "macd_hist", "btc_ret_1", "btc_volume_zscore",
+        ]:
             assert col in df.columns, f"Missing column: {col}"
 
 

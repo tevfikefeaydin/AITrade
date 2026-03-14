@@ -4,10 +4,13 @@ Walk-Forward Training for ML-Assisted Crypto Trading Research Pipeline.
 Implements walk-forward (rolling) cross-validation for training per-symbol models:
 - No shuffle: respects temporal order
 - Rolling window: train on N days, test on M days, step forward
+- Purge gap between train and test to prevent leakage
+- Expanding window option (train_start always at data start)
 - Per-fold metrics: AUC, logloss, and backtest metrics
 - Final model trained on all data
+- Ensemble support: LightGBM + XGBoost averaging
 
-Model: LightGBM classifier (with sklearn fallback)
+Model: LightGBM classifier (with sklearn fallback), optional XGBoost ensemble
 """
 
 import logging
@@ -26,18 +29,68 @@ from .features import get_feature_columns
 logger = logging.getLogger(__name__)
 
 
-def get_model():
+# =============================================================================
+# EnsembleModel: averages LightGBM + XGBoost predictions
+# =============================================================================
+
+class EnsembleModel:
     """
-    Get the ML model to use for training.
+    Ensemble that averages predictions from multiple sub-models.
+
+    Stores sub-models as a list, exposes predict_proba() that averages
+    the positive-class probabilities. Serializable with joblib.
+    """
+
+    def __init__(self, models: list):
+        """
+        Args:
+            models: List of fitted models, each with predict_proba().
+        """
+        self.models = models
+        self.feature_cols_ = []  # Set externally after construction
+
+    def predict_proba(self, X):
+        """Average predict_proba across all sub-models."""
+        probas = []
+        for m in self.models:
+            probas.append(m.predict_proba(X))
+        avg = np.mean(probas, axis=0)
+        return avg
+
+    @property
+    def feature_importances_(self):
+        """Average feature importances across sub-models (if available)."""
+        imps = []
+        for m in self.models:
+            if hasattr(m, "feature_importances_"):
+                imps.append(m.feature_importances_)
+        if not imps:
+            return None
+        return np.mean(imps, axis=0)
+
+
+# =============================================================================
+# Model factory functions
+# =============================================================================
+
+def get_model(params_override=None):
+    """
+    Get the LightGBM model to use for training.
 
     Tries LightGBM first, falls back to sklearn HistGradientBoostingClassifier.
+
+    Args:
+        params_override: Optional dict to override default LGBM_PARAMS.
 
     Returns:
         Model instance
     """
     try:
         import lightgbm as lgb
-        model = lgb.LGBMClassifier(**config.LGBM_PARAMS)
+        params = dict(config.LGBM_PARAMS)
+        if params_override:
+            params.update(params_override)
+        model = lgb.LGBMClassifier(**params)
         logger.info("Using LightGBM classifier")
         return model
     except ImportError:
@@ -52,6 +105,28 @@ def get_model():
         return model
 
 
+def get_xgb_model(params_override=None):
+    """
+    Get an XGBoost model for ensemble training.
+
+    Args:
+        params_override: Optional dict to override default XGBM_PARAMS.
+
+    Returns:
+        XGBClassifier instance
+
+    Raises:
+        ImportError: If xgboost is not installed.
+    """
+    import xgboost as xgb
+    params = dict(config.XGBM_PARAMS)
+    if params_override:
+        params.update(params_override)
+    model = xgb.XGBClassifier(**params)
+    logger.info("Using XGBoost classifier (ensemble member)")
+    return model
+
+
 def walk_forward_split(
     df: pd.DataFrame,
     train_window_days: int,
@@ -59,6 +134,9 @@ def walk_forward_split(
 ) -> List[Tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Generate walk-forward train/test splits.
+
+    Supports purge gap (config.PURGE_GAP_HOURS) between train and test,
+    and expanding window mode (config.USE_EXPANDING_WINDOW).
 
     Args:
         df: DataFrame with open_time column (sorted)
@@ -75,16 +153,18 @@ def walk_forward_split(
 
     train_delta = pd.Timedelta(days=train_window_days)
     test_delta = pd.Timedelta(days=test_window_days)
+    purge_delta = pd.Timedelta(hours=config.PURGE_GAP_HOURS)
 
-    start_time = df["open_time"].min()
+    data_start = df["open_time"].min()
     end_time = df["open_time"].max()
 
     splits = []
-    current_train_start = start_time
+    current_train_start = data_start
 
     while True:
         train_end = current_train_start + train_delta
-        test_start = train_end
+        # Purge gap: test starts after train_end + purge_delta
+        test_start = train_end + purge_delta
         test_end = test_start + test_delta
 
         if test_end > end_time:
@@ -100,11 +180,63 @@ def walk_forward_split(
         if len(train_df) > 0 and len(test_df) > 0:
             splits.append((train_df, test_df))
 
-        # Move forward by test_window_days
-        current_train_start = current_train_start + test_delta
+        if config.USE_EXPANDING_WINDOW:
+            # Expanding: train_start stays at data_start, train_end grows
+            train_delta = train_delta + test_delta
+        else:
+            # Sliding: train_start moves forward
+            current_train_start = current_train_start + test_delta
 
-    logger.info(f"Generated {len(splits)} walk-forward folds")
+    mode_label = "expanding" if config.USE_EXPANDING_WINDOW else "sliding"
+    logger.info(
+        f"Generated {len(splits)} walk-forward folds "
+        f"(mode={mode_label}, purge={config.PURGE_GAP_HOURS}h)"
+    )
     return splits
+
+
+def _fit_lgbm(model, X_train, y_train, X_test, y_test_binary, has_two_classes, sample_weights=None):
+    """Fit a LightGBM model with optional early stopping and sample weights."""
+    try:
+        import lightgbm as lgb
+        is_lgbm = isinstance(model, lgb.LGBMClassifier)
+    except ImportError:
+        is_lgbm = False
+
+    fit_kwargs = {}
+    if sample_weights is not None:
+        fit_kwargs["sample_weight"] = sample_weights
+
+    if is_lgbm and has_two_classes:
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_test, y_test_binary)],
+            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
+            **fit_kwargs,
+        )
+    else:
+        model.fit(X_train, y_train, **fit_kwargs)
+
+    return model
+
+
+def _fit_xgb(model, X_train, y_train, X_test, y_test_binary, has_two_classes, sample_weights=None):
+    """Fit an XGBoost model with optional early stopping and sample weights."""
+    fit_kwargs = {}
+    if sample_weights is not None:
+        fit_kwargs["sample_weight"] = sample_weights
+
+    if has_two_classes:
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_test, y_test_binary)],
+            verbose=False,
+            **fit_kwargs,
+        )
+    else:
+        model.fit(X_train, y_train, **fit_kwargs)
+
+    return model
 
 
 def train_fold(
@@ -112,15 +244,22 @@ def train_fold(
     test_df: pd.DataFrame,
     feature_cols: List[str],
     target_col: str = "label",
+    lgbm_override: Optional[Dict] = None,
+    xgb_override: Optional[Dict] = None,
 ) -> Tuple[object, Dict[str, float]]:
     """
     Train model on a single fold and compute metrics.
+
+    When config.USE_ENSEMBLE is True, trains both LightGBM and XGBoost,
+    returns an EnsembleModel that averages their predictions.
 
     Args:
         train_df: Training data with features and label
         test_df: Test data with features and label
         feature_cols: List of feature column names
         target_col: Name of target column
+        lgbm_override: Optional dict to override LightGBM params
+        xgb_override: Optional dict to override XGBoost params
 
     Returns:
         Tuple of (trained_model, metrics_dict)
@@ -136,33 +275,45 @@ def train_fold(
     X_test = np.nan_to_num(X_test, nan=0.0)
 
     # Binarize fractional labels (from timeout labeling) for classifier
-    # Timeouts with exit return in upper half of barrier range → 1 (success)
-    # Timeouts with exit return in lower half → 0 (failure)
+    # Timeouts with exit return in upper half of barrier range -> 1 (success)
+    # Timeouts with exit return in lower half -> 0 (failure)
     # This captures the key insight: positive-return timeouts are not failures
+    raw_labels = y_train.copy()
     y_train = (y_train >= 0.5).astype(int)
     y_test_binary = (y_test >= 0.5).astype(int)
 
-    # Train model
-    model = get_model()
+    # Compute sample weights: confident labels (near 0 or 1) get higher weight,
+    # ambiguous labels (near 0.5) get lower weight (min 0.3)
+    sample_weights = np.clip(np.abs(2 * raw_labels - 1), 0.3, 1.0)
 
-    # Early stopping for LightGBM (skip if test set is single-class)
     has_two_classes = len(np.unique(y_test_binary)) > 1
-    try:
-        import lightgbm as lgb
-        is_lgbm = isinstance(model, lgb.LGBMClassifier)
-    except ImportError:
-        is_lgbm = False
 
-    if is_lgbm and has_two_classes:
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test_binary)],
-            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)],
-        )
+    # Train LightGBM
+    lgbm_model = get_model(params_override=lgbm_override)
+    lgbm_model = _fit_lgbm(
+        lgbm_model, X_train, y_train, X_test, y_test_binary,
+        has_two_classes, sample_weights=sample_weights,
+    )
+
+    best_iter = getattr(
+        lgbm_model, "best_iteration_",
+        lgbm_model.n_estimators if hasattr(lgbm_model, "n_estimators") else 500,
+    )
+
+    # Ensemble: also train XGBoost
+    if config.USE_ENSEMBLE:
+        try:
+            xgb_model = get_xgb_model(params_override=xgb_override)
+            xgb_model = _fit_xgb(
+                xgb_model, X_train, y_train, X_test, y_test_binary,
+                has_two_classes, sample_weights=sample_weights,
+            )
+            model = EnsembleModel([lgbm_model, xgb_model])
+        except ImportError:
+            logger.warning("XGBoost not available, falling back to LightGBM only")
+            model = lgbm_model
     else:
-        model.fit(X_train, y_train)
-
-    best_iter = getattr(model, "best_iteration_", model.n_estimators if hasattr(model, "n_estimators") else 500)
+        model = lgbm_model
 
     # Predict probabilities
     y_pred_proba = model.predict_proba(X_test)[:, 1]
@@ -193,7 +344,14 @@ def train_fold(
     return model, metrics
 
 
-def _run_folds(splits, feature_cols, symbol, pass_label=""):
+def _run_folds(
+    splits,
+    feature_cols,
+    symbol,
+    pass_label="",
+    lgbm_override=None,
+    xgb_override=None,
+):
     """Run walk-forward folds and collect results, OOS predictions, importances."""
     fold_results = []
     oos_records = []
@@ -202,7 +360,11 @@ def _run_folds(splits, feature_cols, symbol, pass_label=""):
 
     desc = f"Training {symbol}" + (f" ({pass_label})" if pass_label else "")
     for i, (train_df, test_df) in enumerate(tqdm(splits, desc=desc)):
-        model, metrics = train_fold(train_df, test_df, feature_cols)
+        model, metrics = train_fold(
+            train_df, test_df, feature_cols,
+            lgbm_override=lgbm_override,
+            xgb_override=xgb_override,
+        )
 
         # Collect OOS predictions from this fold's test set
         X_test = np.nan_to_num(test_df[feature_cols].values, nan=0.0)
@@ -218,9 +380,10 @@ def _run_folds(splits, feature_cols, symbol, pass_label=""):
                 record["signal_type_encoded"] = row["signal_type_encoded"]
             oos_records.append(record)
 
-        # Collect feature importance
-        if hasattr(model, "feature_importances_"):
-            fold_importances.append(model.feature_importances_)
+        # Collect feature importance (works for both single model and ensemble)
+        fi = getattr(model, "feature_importances_", None)
+        if fi is not None:
+            fold_importances.append(fi)
 
         best_iterations.append(metrics["best_iteration"])
 
@@ -252,6 +415,8 @@ def train_walk_forward(
     train_window_days: int = None,
     test_window_days: int = None,
     save_model: bool = True,
+    lgbm_override: Optional[Dict] = None,
+    xgb_override: Optional[Dict] = None,
 ) -> Tuple[object, List[Dict], Dict[str, float]]:
     """
     Train model using walk-forward validation.
@@ -263,6 +428,8 @@ def train_walk_forward(
         train_window_days: Training window size
         test_window_days: Test window size
         save_model: Whether to save the final model
+        lgbm_override: Optional dict to override LightGBM params per fold
+        xgb_override: Optional dict to override XGBoost params per fold
 
     Returns:
         Tuple of (final_model, fold_results, aggregate_metrics)
@@ -272,6 +439,8 @@ def train_walk_forward(
 
     logger.info(f"Starting walk-forward training for {symbol}")
     logger.info(f"Train window: {train_window_days} days, Test window: {test_window_days} days")
+    if config.USE_ENSEMBLE:
+        logger.info("Ensemble mode: LightGBM + XGBoost")
 
     # Merge features with labels (include signal_type_encoded for multi-signal support)
     label_cols = ["entry_time", "label"]
@@ -307,9 +476,10 @@ def train_walk_forward(
         logger.warning("No valid walk-forward splits generated")
         return None, [], {}
 
-    # ── PASS 1: Train all folds with full feature set ──────────────────
+    # -- PASS 1: Train all folds with full feature set --------------------
     fold_results, oos_records, fold_importances, best_iterations = _run_folds(
-        splits, available_cols, symbol, pass_label="Pass 1"
+        splits, available_cols, symbol, pass_label="Pass 1",
+        lgbm_override=lgbm_override, xgb_override=xgb_override,
     )
 
     # ── Feature pruning ─────────────────────────────────────────────────
@@ -326,11 +496,12 @@ def train_walk_forward(
                     f"Pruned {len(dropped)} low-importance features: {dropped}"
                 )
 
-    # ── PASS 2: Retrain with pruned features if any were dropped ─────
+    # -- PASS 2: Retrain with pruned features if any were dropped ---------
     if len(pruned_cols) < len(available_cols):
         logger.info(f"Retraining with {len(pruned_cols)} features (was {len(available_cols)})...")
         fold_results, oos_records, fold_importances, best_iterations = _run_folds(
-            splits, pruned_cols, symbol, pass_label="Pass 2"
+            splits, pruned_cols, symbol, pass_label="Pass 2",
+            lgbm_override=lgbm_override, xgb_override=xgb_override,
         )
 
     # ── Aggregate metrics across folds ───────────────────────────────
@@ -354,19 +525,34 @@ def train_walk_forward(
         f"avg_iter={aggregate_metrics.get('mean_best_iteration', 'N/A')}"
     )
 
-    # ── Train final model on all data ────────────────────────────────
+    # -- Train final model on all data ------------------------------------
     logger.info("Training final model on all data...")
     X_all = df_merged[pruned_cols].values
     y_all = (df_merged["label"].values >= 0.5).astype(int)  # Binarize fractional labels
     X_all = np.nan_to_num(X_all, nan=0.0)
 
-    final_model = get_model()
+    lgbm_final = get_model(params_override=lgbm_override)
     # Use average best iteration from folds (minimum 10)
+    avg_best_iter = None
     if best_iterations:
         avg_best_iter = max(10, int(np.mean(best_iterations)))
-        final_model.n_estimators = avg_best_iter
-        logger.info(f"Final model n_estimators set to {avg_best_iter} (fold average)")
-    final_model.fit(X_all, y_all)
+        lgbm_final.n_estimators = avg_best_iter
+        logger.info(f"Final LightGBM n_estimators set to {avg_best_iter} (fold average)")
+    lgbm_final.fit(X_all, y_all)
+
+    if config.USE_ENSEMBLE:
+        try:
+            xgb_final = get_xgb_model(params_override=xgb_override)
+            if avg_best_iter is not None:
+                xgb_final.n_estimators = avg_best_iter
+            xgb_final.fit(X_all, y_all)
+            final_model = EnsembleModel([lgbm_final, xgb_final])
+            logger.info("Final model: EnsembleModel (LightGBM + XGBoost)")
+        except ImportError:
+            logger.warning("XGBoost not available for final model, using LightGBM only")
+            final_model = lgbm_final
+    else:
+        final_model = lgbm_final
 
     # Save feature columns with model for prediction
     final_model.feature_cols_ = pruned_cols
@@ -433,6 +619,8 @@ def predict_proba(
     """
     Get probability predictions from a trained model.
 
+    Works transparently with both single models and EnsembleModel.
+
     Args:
         model: Trained model with feature_cols_ attribute
         df_features: DataFrame with features
@@ -453,6 +641,8 @@ def get_feature_importance(model: object) -> pd.DataFrame:
     """
     Get feature importance from a trained model.
 
+    For EnsembleModel, returns averaged importances across sub-models.
+
     Args:
         model: Trained model
 
@@ -461,9 +651,8 @@ def get_feature_importance(model: object) -> pd.DataFrame:
     """
     feature_cols = getattr(model, "feature_cols_", get_feature_columns())
 
-    if hasattr(model, "feature_importances_"):
-        importance = model.feature_importances_
-    else:
+    importance = getattr(model, "feature_importances_", None)
+    if importance is None:
         importance = [0] * len(feature_cols)
 
     df = pd.DataFrame({

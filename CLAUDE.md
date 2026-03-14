@@ -2,15 +2,17 @@
 
 ## Project Overview
 ML-Assisted Crypto Trading Research Pipeline for BTCUSDT/ETHUSDT spot trading.
-Educational project - meta-labeling approach with LightGBM, triple-barrier labeling,
-walk-forward validation, and realistic backtesting.
+Educational project - meta-labeling approach with LightGBM+XGBoost ensemble,
+triple-barrier labeling, walk-forward validation with purge gap, Optuna HPO,
+and realistic backtesting.
 
 ## Quick Commands
 ```bash
 pip install -r requirements.txt
 python -m src.cli download                      # Incremental 1m kline download
 python -m src.cli build                         # Features + signals + labeling
-python -m src.cli train                         # Walk-forward ML training
+python -m src.cli optimize                      # Optuna hyperparameter search
+python -m src.cli train                         # Walk-forward ML training (ensemble)
 python -m src.cli backtest --prob_threshold 0.50 # Backtest with ML filter
 python -m src.cli paper --all                   # Live paper trading (all symbols)
 pytest tests/ -v                                # Run all tests
@@ -75,26 +77,31 @@ outputs/                 # Backtest CSVs + JSON summaries (gitignored)
 - **Barrier Prices**: TP/SL barriers use raw execution price (matches labeling.py), not cost-adjusted price
 - **Overlapping trade prevention**: `blocked_until_time` in backtest prevents new entries during open positions
 
-## Feature List (27 features in `get_feature_columns()`)
-Wick (3): upper_wick_ratio, lower_wick_ratio, body_ratio (raw body/range/upper_wick/lower_wick removed — price-level dependent)
+## Feature List (34 features in `get_feature_columns()`)
+Wick (3): upper_wick_ratio, lower_wick_ratio, body_ratio
 Returns (5): ret_1, ret_3, ret_6, ret_12, ret_24
 Volatility (1): vol_20
-Momentum (3): rsi, rsi_slope, ma_gap
-Volume (2): volume_zscore, volume_ratio
+Momentum (5): rsi, rsi_slope, ma_gap, stoch_rsi, macd_hist
+Volume (3): volume_zscore, volume_ratio, taker_buy_ratio
 Intrabar (5): max_runup, max_drawdown, intrabar_vol, intrabar_skew, up_down_ratio
 4h Context (2): trend_4h, ma_slope_4h
-Market Regime (1): atr_ratio
+Market Regime (3): atr_ratio, rolling_sharpe_20, bb_width
+Cross-Asset (2): btc_ret_1, btc_volume_zscore (BTC features for ETH; 0.0 for BTC itself)
 Time (4): hour_sin, hour_cos, dow_sin, dow_cos
 Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 
 ## Config Defaults (src/config.py)
 - Symbols: BTCUSDT, ETHUSDT
 - Date range: 2024-01-01 to today (datetime.now())
-- Barriers: PT=0.8%, SL=0.6% (fallback), max_hold=12h, ATR dynamic (TP mult=2.0, SL mult=1.5, floor=0.8%, ceil=3.0%)
+- Barriers: PT=0.8%, SL=0.6% (fallback), max_hold=12h, ATR dynamic (TP mult=2.5, SL mult=1.0, floor=1.2%, ceil=3.0%)
 - Costs: fee=10bps, slippage=2bps
-- Training: 270d train, 60d test, prob_threshold=0.50
+- Training: 270d train (or expanding), 60d test, prob_threshold=0.50, purge_gap=12h
+- Ensemble: LightGBM + XGBoost (averaged probabilities), USE_ENSEMBLE=True
 - LightGBM: gbdt, 15 leaves, lr=0.05, 500 estimators (early stopping), seed=42, min_child_samples=20, reg_alpha=0.1, reg_lambda=1.0
+- XGBoost: max_depth=4, lr=0.05, 500 estimators, subsample=0.8, colsample=0.8
 - Feature pruning: FEATURE_MIN_IMPORTANCE_PCT=1.0 (features with <1% avg importance dropped, retrain with pruned set)
+- Target: cost-aware labeling (TP shifted up by round-trip costs), sample weights from fractional labels
+- Optuna HPO: 50 trials, walk-forward OOS AUC objective
 - ADX: period=14, threshold=12, USE_ADX_FILTER=True
 - Soft Guard: enabled, SL_streak=3, lookback=7, min_winrate=0.30, bonus=+0.10, cooldown=180min, recovery=12h
 
@@ -103,12 +110,14 @@ Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 ### Completed
 - [x] Full pipeline: download -> build -> train -> backtest -> paper
 - [x] Incremental data download with gap detection
-- [x] 27-feature engineering with strict no-lookahead (incl. signal_type_encoded, dow_sin/cos, rsi_slope)
-- [x] Walk-forward LightGBM training
+- [x] 34-feature engineering with strict no-lookahead (incl. taker_buy_ratio, cross-asset, regime, stoch_rsi, macd_hist)
+- [x] Walk-forward LightGBM+XGBoost ensemble training with purge gap
+- [x] Optuna hyperparameter optimization (walk-forward OOS AUC objective)
+- [x] Cost-aware labeling + sample weights from fractional labels
 - [x] Realistic backtest (T+1, costs, 1m barrier fills, overlapping trade prevention)
 - [x] Paper trading with WebSocket + real-time features
-- [x] 165 tests across 8 modules (wicks, features/lookahead, labeling, backtest, regressions, signals, data_binance, resample)
-- [x] CLI with 5 commands + paper trading CLI args (adx, soft_guard, cooldown)
+- [x] 177 tests across 9 modules (wicks, features, labeling, backtest, regressions, signals, data_binance, resample, improvements)
+- [x] CLI with 6 commands (download, build, optimize, train, backtest, paper)
 - [x] 1h ADX regime filter (Wilder smoothing, threshold=12) in signals + live
 - [x] Soft guardrail in paper trader (threshold bonus + cooldown on bad streaks)
 - [x] Barrier fix: TP/SL use raw execution price (consistent with labeling)

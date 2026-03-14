@@ -147,12 +147,18 @@ def compute_barrier_prices(
     sl_atr_mult: float = None,
     min_barrier_pct: float = None,
     max_barrier_pct: float = None,
+    cost_adjust: bool = False,
 ) -> tuple:
     """
     Compute TP/SL barrier prices, optionally using ATR-based sizing.
 
     When atr_value is provided and USE_ATR_BARRIERS is True, barriers are
     scaled to current volatility.  Otherwise falls back to fixed percentages.
+
+    When cost_adjust is True, round-trip trading costs are added to the TP
+    percentage so that label=1 means the trade is net-profitable after costs.
+    This should only be used in labeling, not in backtest (which applies costs
+    separately).
 
     Args:
         entry_price: Raw execution price (barriers anchor on this)
@@ -163,6 +169,7 @@ def compute_barrier_prices(
         sl_atr_mult: SL multiplier (default from config)
         min_barrier_pct: Floor for barrier % (default from config)
         max_barrier_pct: Ceiling for barrier % (default from config)
+        cost_adjust: If True, add round-trip costs to TP (for labeling only)
 
     Returns:
         (tp_price, sl_price)
@@ -183,6 +190,11 @@ def compute_barrier_prices(
     else:
         tp_pct = pt
         sl_pct = sl
+
+    # Cost-aware TP adjustment: shift TP up by round-trip costs
+    if cost_adjust:
+        round_trip_cost = 2 * (config.DEFAULT_FEE_BPS + config.DEFAULT_SLIPPAGE_BPS) / 10000
+        tp_pct = tp_pct + round_trip_cost
 
     tp_price = entry_price * (1 + tp_pct)
     sl_price = entry_price * (1 - sl_pct)

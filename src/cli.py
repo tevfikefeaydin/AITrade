@@ -77,6 +77,9 @@ def cmd_build(args):
 
     ensure_directories()
 
+    # Store BTC 1h data for cross-asset features
+    btc_1h_data = None
+
     for symbol in config.SYMBOLS:
         logger.info(f"\n{'='*50}")
         logger.info(f"Building features for {symbol}")
@@ -91,8 +94,15 @@ def cmd_build(args):
         # Build multi-timeframe data
         df_1m, df_1h, df_4h, df_intrabar = build_multi_timeframe_data(df_1m)
 
+        # For BTC: self-reference (None), for others: use BTC as reference
+        if symbol == "BTCUSDT":
+            df_reference_1h = None  # Self-reference → features filled with 0
+            btc_1h_data = df_1h.copy()  # Store for subsequent symbols
+        else:
+            df_reference_1h = btc_1h_data  # Use BTC 1h as cross-asset reference
+
         # Build features
-        df_features = build_features(df_1m, df_1h, df_4h)
+        df_features = build_features(df_1m, df_1h, df_4h, df_reference_1h=df_reference_1h)
 
         # Add signal columns
         df_features = add_signal_columns(df_features)
@@ -123,6 +133,7 @@ def cmd_build(args):
 
 def cmd_train(args):
     """Train ML models with walk-forward validation."""
+    import json
     from .train import train_walk_forward
 
     ensure_directories()
@@ -148,6 +159,19 @@ def cmd_train(args):
 
         df_labeled = pd.read_parquet(labeled_path)
 
+        # Check for Optuna best params
+        lgbm_override = None
+        best_params_path = config.get_symbol_best_params_path(symbol)
+        if best_params_path.exists():
+            with open(best_params_path, "r") as f:
+                best_data = json.load(f)
+            lgbm_override = best_data.get("lgbm_params")
+            if lgbm_override:
+                logger.info(
+                    f"Loaded Optuna best params for {symbol} "
+                    f"(AUC={best_data.get('best_auc', '?'):.4f}): {lgbm_override}"
+                )
+
         # Train with walk-forward
         model, fold_results, aggregate_metrics = train_walk_forward(
             symbol=symbol,
@@ -156,6 +180,7 @@ def cmd_train(args):
             train_window_days=args.train_window_days,
             test_window_days=args.test_window_days,
             save_model=True,
+            lgbm_override=lgbm_override,
         )
 
         if model is not None:
@@ -278,6 +303,54 @@ def cmd_backtest(args):
         print("\n" + leaderboard.to_string())
 
     logger.info("\nBacktest complete!")
+
+
+def cmd_optimize(args):
+    """Run Optuna hyperparameter optimization."""
+    from .optimize import run_optimization
+
+    ensure_directories()
+
+    for symbol in config.SYMBOLS:
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Optimizing hyperparameters for {symbol}")
+        logger.info(f"{'='*50}")
+
+        # Load features
+        features_path = config.get_symbol_features_path(symbol)
+        if not features_path.exists():
+            logger.error(f"Features not found for {symbol}. Run 'build' first.")
+            continue
+
+        df_features = pd.read_parquet(features_path)
+
+        # Load labeled candidates
+        labeled_path = config.DATA_DIR / f"{symbol}_labeled.parquet"
+        if not labeled_path.exists():
+            logger.error(f"Labeled data not found for {symbol}. Run 'build' first.")
+            continue
+
+        df_labeled = pd.read_parquet(labeled_path)
+
+        study = run_optimization(
+            symbol=symbol,
+            df_features=df_features,
+            df_labeled=df_labeled,
+            n_trials=args.n_trials,
+            timeout=args.timeout,
+        )
+
+        if study is not None:
+            print(f"\n{symbol} optimization results:")
+            print(f"  Best AUC: {study.best_value:.4f}")
+            print(f"  Best params: {study.best_params}")
+            print(f"  Trials: {len(study.trials)}")
+            best_path = config.get_symbol_best_params_path(symbol)
+            print(f"  Saved to: {best_path}")
+        else:
+            logger.warning(f"Optimization failed for {symbol}")
+
+    logger.info("\nOptimization complete! Run 'train' to use optimized params.")
 
 
 def cmd_paper(args):
@@ -513,6 +586,24 @@ Paper Trading:
         help=f"Entry cooldown in guard mode (default: {config.SOFT_GUARD_COOLDOWN_MINUTES})",
     )
 
+    # Optimize command
+    optimize_parser = subparsers.add_parser(
+        "optimize",
+        help="Run Optuna hyperparameter optimization",
+    )
+    optimize_parser.add_argument(
+        "--n_trials",
+        type=int,
+        default=config.OPTUNA_N_TRIALS,
+        help=f"Number of Optuna trials (default: {config.OPTUNA_N_TRIALS})",
+    )
+    optimize_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=config.OPTUNA_TIMEOUT_SECONDS,
+        help=f"Timeout in seconds (default: {config.OPTUNA_TIMEOUT_SECONDS})",
+    )
+
     args = parser.parse_args()
 
     # Setup logging
@@ -529,6 +620,7 @@ Paper Trading:
         "build": cmd_build,
         "train": cmd_train,
         "backtest": cmd_backtest,
+        "optimize": cmd_optimize,
         "paper": cmd_paper,
     }
 

@@ -40,6 +40,7 @@ def resample_ohlcv(df: pd.DataFrame, interval: str) -> pd.DataFrame:
         "low": "min",
         "close": "last",
         "volume": "sum",
+        "taker_buy_base": "sum",
     }
 
     # Only include columns that exist

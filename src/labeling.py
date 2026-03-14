@@ -34,6 +34,7 @@ def find_barrier_touch(
     sl: float,
     max_hold_hours: int,
     atr_value: float = None,
+    cost_adjust: bool = False,
 ) -> Tuple[int, pd.Timestamp, float, str]:
     """
     Find which barrier is touched first using 1-minute data.
@@ -46,6 +47,7 @@ def find_barrier_touch(
         sl: Stop-loss barrier as decimal (e.g., 0.006 for 0.6%)
         max_hold_hours: Maximum holding period in hours
         atr_value: ATR-14 at entry time (None → use fixed pt/sl)
+        cost_adjust: If True, add round-trip costs to TP (for labeling only)
 
     Returns:
         Tuple of (label, exit_time, exit_price, exit_reason)
@@ -57,6 +59,7 @@ def find_barrier_touch(
     # Calculate barrier prices (ATR-based or fixed %)
     tp_price, sl_price = compute_barrier_prices(
         entry_price, pt, sl, atr_value=atr_value,
+        cost_adjust=cost_adjust,
     )
 
     # Calculate time horizon
@@ -210,6 +213,7 @@ def label_candidates(
             sl=sl,
             max_hold_hours=max_hold,
             atr_value=atr_value,
+            cost_adjust=config.COST_AWARE_LABELING,
         )
 
         results.append({
