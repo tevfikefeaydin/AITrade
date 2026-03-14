@@ -1,6 +1,15 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tmp_pytest*/
 .env
 .env.*
+!.env.example
 *.log
+venv/
+data/
+models/
+outputs/
+.claude/
