@@ -251,6 +251,7 @@ class PaperTrader:
         now_utc = now or datetime.now(timezone.utc)
         if now_utc >= self._guard_mode_until:
             self._guard_mode_until = None
+            self._save_guard_state()  # persist expiry so restart doesn't reload stale guard
             return False
         return True
 
@@ -268,6 +269,7 @@ class PaperTrader:
         now_utc = now or datetime.now(timezone.utc)
         if now_utc >= self._next_entry_allowed_at:
             self._next_entry_allowed_at = None
+            self._save_guard_state()  # persist expiry so restart doesn't reload stale cooldown
             return True
         return False
 

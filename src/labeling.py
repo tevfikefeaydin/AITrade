@@ -90,13 +90,23 @@ def find_barrier_touch(
         sl_hit = bar_low <= sl_price
 
         if tp_hit and sl_hit:
-            # Both barriers hit in same bar - need to determine which was first
-            # Heuristic: if close is above entry, TP likely hit first; otherwise SL
-            # This is an approximation; real trading would need tick data
-            if bar_close >= entry_price:
+            # Both barriers hit in same bar - determine which was hit first
+            # Heuristic: compare distance from bar_open to each barrier.
+            # The closer barrier was likely reached first.
+            bar_open = row["open"]
+            if bar_open >= tp_price:
+                # Already at/above TP at open → TP hit first
                 return 1, bar_time, tp_price, "TP"
-            else:
+            elif bar_open <= sl_price:
+                # Already at/below SL at open → SL hit first
                 return 0, bar_time, sl_price, "SL"
+            else:
+                dist_to_tp = tp_price - bar_open
+                dist_to_sl = bar_open - sl_price
+                if dist_to_tp <= dist_to_sl:
+                    return 1, bar_time, tp_price, "TP"
+                else:
+                    return 0, bar_time, sl_price, "SL"
 
         if tp_hit:
             return 1, bar_time, tp_price, "TP"

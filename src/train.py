@@ -380,6 +380,23 @@ def train_walk_forward(
         # Save OOS predictions for honest backtesting
         if oos_records:
             df_oos = pd.DataFrame(oos_records)
+            # Ensure consistent types for composite key merge in backtest
+            if "signal_type_encoded" in df_oos.columns:
+                df_oos["signal_type_encoded"] = df_oos["signal_type_encoded"].astype(int)
+            # Deduplicate: keep last fold's prediction for each (open_time, signal_type)
+            dedup_cols = ["open_time"]
+            if "signal_type_encoded" in df_oos.columns:
+                dedup_cols.append("signal_type_encoded")
+            n_before = len(df_oos)
+            df_oos = df_oos.sort_values("fold").drop_duplicates(
+                subset=dedup_cols, keep="last"
+            )
+            if len(df_oos) < n_before:
+                logger.warning(
+                    "Deduplicated OOS predictions: %d -> %d rows",
+                    n_before, len(df_oos),
+                )
+            df_oos = df_oos.drop(columns=["fold"])
             oos_path = config.get_symbol_oos_path(symbol)
             oos_path.parent.mkdir(parents=True, exist_ok=True)
             df_oos.to_parquet(oos_path, index=False)

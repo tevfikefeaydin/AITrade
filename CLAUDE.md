@@ -53,6 +53,9 @@ tests/
   test_labeling.py       # Triple-barrier on synthetic data
   test_backtest.py       # T+1 execution, cost application, barrier raw price
   test_regressions.py    # Regression tests (overlapping trades, intrabar signs, close-breakout, ADX filter, soft guard, PM history)
+  test_signals.py        # Signal generation (breakout, MR, volume-spike, exit, candidates)
+  test_data_binance.py   # Data downloader (interval conversion, gap detection, mocked API)
+  test_resample.py       # Resampling (OHLCV aggregation, intrabar features, 4h alignment)
 data/                    # Parquet files (gitignored)
 models/                  # Trained .pkl models (gitignored)
 outputs/                 # Backtest CSVs + JSON summaries (gitignored)
@@ -95,7 +98,7 @@ Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 - ADX: period=14, threshold=12, USE_ADX_FILTER=True
 - Soft Guard: enabled, SL_streak=3, lookback=7, min_winrate=0.30, bonus=+0.10, cooldown=180min, recovery=12h
 
-## Current State (Feb 2026)
+## Current State (Mar 2026)
 
 ### Completed
 - [x] Full pipeline: download -> build -> train -> backtest -> paper
@@ -104,7 +107,7 @@ Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 - [x] Walk-forward LightGBM training
 - [x] Realistic backtest (T+1, costs, 1m barrier fills, overlapping trade prevention)
 - [x] Paper trading with WebSocket + real-time features
-- [x] 91 tests across 5 modules (wicks, features/lookahead, labeling, backtest, regressions)
+- [x] 165 tests across 8 modules (wicks, features/lookahead, labeling, backtest, regressions, signals, data_binance, resample)
 - [x] CLI with 5 commands + paper trading CLI args (adx, soft_guard, cooldown)
 - [x] 1h ADX regime filter (Wilder smoothing, threshold=12) in signals + live
 - [x] Soft guardrail in paper trader (threshold bonus + cooldown on bad streaks)
@@ -195,6 +198,11 @@ pytest tests/test_regressions.py -v # Regression tests
 ```
 
 ## Bug Fixes Applied
+- `labeling.py` + `backtest.py`: Both-barrier heuristic improved — uses bar_open distance to barriers instead of bar_close >= entry_price (more accurate ~5% of ambiguous trades)
+- `train.py`: OOS predictions deduplicated on (open_time, signal_type_encoded) composite key with consistent int type
+- `backtest.py`: OOS merge enforces int type for signal_type_encoded; logs warning when candidates are dropped due to missing OOS predictions
+- `paper_trader.py`: Guard state + cooldown expiry now persisted to disk immediately (was lost on crash between expiry check and next save)
+- `position_manager.py`: OPEN positions deduplicated by (symbol, entry_time) during history restore to prevent double-restore on crash
 - `resample.py` + `features.py`: datetime64 resolution mismatch fix (ms vs us) for pandas 2.x merge_asof
 - `setup_vps.sh`: Removed SSH PermitRootLogin hardening (was locking out password-based root access)
 - `install.sh`: Now runs as root and auto-copies files from /root/app to /home/aitradew/app

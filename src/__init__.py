@@ -1,2 +1,2 @@
 # ML-Assisted Crypto Trading Research Pipeline
-# Educational project for BTCUSDT and ETHUSDT trading research
+# BTCUSDT and ETHUSDT spot trading research with LightGBM meta-labeling

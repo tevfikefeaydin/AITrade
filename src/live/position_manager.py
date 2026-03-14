@@ -57,6 +57,7 @@ class PositionManager:
                             self.win_count += 1
                 # Restore OPEN positions so restart doesn't lose them
                 open_count = 0
+                seen_entry_times = set()
                 for trade in history:
                     if trade.get("status") == "OPEN":
                         for key in ["entry_time", "exit_time", "max_exit_time", "signal_time"]:
@@ -68,6 +69,12 @@ class PositionManager:
                                     trade[key] = dt
                                 except (ValueError, TypeError):
                                     pass
+                        # Deduplicate by (symbol, entry_time) to prevent double-restore
+                        dedup_key = (trade.get("symbol"), str(trade.get("entry_time")))
+                        if dedup_key in seen_entry_times:
+                            logger.warning(f"Skipping duplicate OPEN position: {dedup_key}")
+                            continue
+                        seen_entry_times.add(dedup_key)
                         self.positions.append(trade)
                         open_count += 1
                         logger.info(f"Restored OPEN position: {trade.get('symbol')}")

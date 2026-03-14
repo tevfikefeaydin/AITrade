@@ -91,13 +91,21 @@ def simulate_barrier_exit(
         sl_hit = bar_low <= sl_price
 
         if tp_hit and sl_hit:
-            # Both hit - use close to determine which was likely first
-            if bar_close >= execution_price:
-                gross_price = tp_price
-                exit_reason = "TP"
+            # Both barriers hit in same bar - determine which was hit first
+            # Heuristic: compare distance from bar_open to each barrier.
+            # The closer barrier was likely reached first.
+            bar_open = row["open"]
+            if bar_open >= tp_price:
+                gross_price, exit_reason = tp_price, "TP"
+            elif bar_open <= sl_price:
+                gross_price, exit_reason = sl_price, "SL"
             else:
-                gross_price = sl_price
-                exit_reason = "SL"
+                dist_to_tp = tp_price - bar_open
+                dist_to_sl = bar_open - sl_price
+                if dist_to_tp <= dist_to_sl:
+                    gross_price, exit_reason = tp_price, "TP"
+                else:
+                    gross_price, exit_reason = sl_price, "SL"
             exit_price_net = calculate_costs(gross_price, fee_bps, slippage_bps, is_buy=False)
             return bar_time, exit_price_net, exit_reason, gross_price
 
@@ -195,6 +203,13 @@ def run_backtest(
     # Get predictions: prefer OOS fold predictions over final model
     if oos_predictions is not None:
         n_total = len(df_candidates)
+        # Ensure consistent types for composite key merge
+        if "signal_type_encoded" in df_candidates.columns:
+            df_candidates["signal_type_encoded"] = df_candidates["signal_type_encoded"].astype(int)
+        if "signal_type_encoded" in oos_predictions.columns:
+            oos_predictions = oos_predictions.copy()
+            oos_predictions["signal_type_encoded"] = oos_predictions["signal_type_encoded"].astype(int)
+
         # Use composite key for multi-signal support
         oos_merge_cols = ["open_time", "oos_probability"]
         oos_on_cols = ["open_time"]
@@ -209,6 +224,12 @@ def run_backtest(
         )
         df_candidates["probability"] = df_candidates["oos_probability"]
         df_candidates = df_candidates.drop(columns=["oos_probability"])
+        n_dropped = n_total - len(df_candidates)
+        if n_dropped > 0:
+            logger.warning(
+                "Dropped %d/%d candidates with no matching OOS prediction",
+                n_dropped, n_total,
+            )
         logger.info(
             f"Using {len(df_candidates)} OOS predictions (out of {n_total} candidates)"
         )

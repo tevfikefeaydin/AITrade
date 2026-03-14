@@ -938,7 +938,7 @@ def test_compute_barrier_prices_asymmetric_rr(monkeypatch):
 
 
 def test_backtest_both_hit_heuristic():
-    """When both TP and SL are hit in same 1m bar, close determines outcome."""
+    """When both TP and SL are hit in same 1m bar, open-distance determines outcome."""
     from src.backtest import simulate_barrier_exit
 
     execution_price = 100.0
@@ -949,13 +949,13 @@ def test_backtest_both_hit_heuristic():
 
     entry_time = datetime(2024, 1, 1, 0, 59)
 
-    # Case 1: close >= execution_price → should be TP
+    # Case 1: open closer to TP (100.8) → dist_to_tp=0.2 < dist_to_sl=1.8 → TP
     df_1m_tp = pd.DataFrame({
         "open_time": [datetime(2024, 1, 1, 1, 0)],
-        "open": [100.0],
+        "open": [100.8],   # closer to TP (101) than SL (99)
         "high": [102.0],   # hits TP (101)
         "low": [98.0],     # hits SL (99)
-        "close": [101.5],  # close >= 100 → TP
+        "close": [101.5],
         "volume": [1000.0],
     })
 
@@ -971,13 +971,13 @@ def test_backtest_both_hit_heuristic():
     )
     assert reason_tp == "TP"
 
-    # Case 2: close < execution_price → should be SL
+    # Case 2: open closer to SL (99.2) → dist_to_tp=1.8 > dist_to_sl=0.2 → SL
     df_1m_sl = pd.DataFrame({
         "open_time": [datetime(2024, 1, 1, 1, 0)],
-        "open": [100.0],
+        "open": [99.2],    # closer to SL (99) than TP (101)
         "high": [102.0],   # hits TP
         "low": [98.0],     # hits SL
-        "close": [98.5],   # close < 100 → SL
+        "close": [98.5],
         "volume": [1000.0],
     })
 
@@ -992,6 +992,28 @@ def test_backtest_both_hit_heuristic():
         slippage_bps=slippage_bps,
     )
     assert reason_sl == "SL"
+
+    # Case 3: open equidistant (100.0) → ties go to TP
+    df_1m_tie = pd.DataFrame({
+        "open_time": [datetime(2024, 1, 1, 1, 0)],
+        "open": [100.0],   # equidistant: dist_to_tp=1.0, dist_to_sl=1.0
+        "high": [102.0],
+        "low": [98.0],
+        "close": [98.5],
+        "volume": [1000.0],
+    })
+
+    _, _, reason_tie, _ = simulate_barrier_exit(
+        df_1m=df_1m_tie,
+        entry_time=entry_time,
+        execution_price=execution_price,
+        entry_price_with_costs=execution_price,
+        pt=pt, sl=sl,
+        max_hold_hours=12,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+    )
+    assert reason_tie == "TP"  # ties favor TP (closer barrier wins, equal → TP)
 
 
 # ── Multi-Signal Tests ─────────────────────────────────────────────
