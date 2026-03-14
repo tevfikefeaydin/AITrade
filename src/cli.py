@@ -94,12 +94,9 @@ def cmd_build(args):
         # Build multi-timeframe data
         df_1m, df_1h, df_4h, df_intrabar = build_multi_timeframe_data(df_1m)
 
-        # For BTC: self-reference (None), for others: use BTC as reference
-        if symbol == "BTCUSDT":
-            df_reference_1h = None  # Self-reference → features filled with 0
-            btc_1h_data = df_1h.copy()  # Store for subsequent symbols
-        else:
-            df_reference_1h = btc_1h_data  # Use BTC 1h as cross-asset reference
+        # Cross-asset: BTC self-ref (None), ETH uses BTC as reference
+        # Disabled for now due to timezone compat issues with existing data
+        df_reference_1h = None
 
         # Build features
         df_features = build_features(df_1m, df_1h, df_4h, df_reference_1h=df_reference_1h)

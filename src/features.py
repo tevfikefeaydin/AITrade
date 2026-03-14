@@ -515,8 +515,11 @@ def compute_cross_asset_features(
     df_target = df_target.sort_values("open_time")
     df_ref = df_ref.sort_values("open_time")
 
-    # Ensure same datetime resolution (pandas 2.x compat)
-    df_ref["open_time"] = df_ref["open_time"].astype(df_target["open_time"].dtype)
+    # Normalize both to naive UTC (strip timezone) for merge_asof compat
+    if df_target["open_time"].dt.tz is not None:
+        df_target["open_time"] = df_target["open_time"].dt.tz_localize(None)
+    if df_ref["open_time"].dt.tz is not None:
+        df_ref["open_time"] = df_ref["open_time"].dt.tz_localize(None)
 
     df_target = pd.merge_asof(
         df_target,
@@ -679,7 +682,6 @@ def get_feature_columns() -> list:
         # Volume
         "volume_zscore",
         "volume_ratio",
-        "taker_buy_ratio",
         # Intrabar
         "max_runup",
         "max_drawdown",

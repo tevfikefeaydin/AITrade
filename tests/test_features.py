@@ -414,10 +414,10 @@ class TestNewFeatures:
         assert all(df["hour_sin"].between(-1, 1))
         assert all(df["hour_cos"].between(-1, 1))
 
-    def test_feature_count_is_34(self):
-        """get_feature_columns should return 34 features (27 + 7 new: taker_buy_ratio, btc_ret_1, btc_volume_zscore, rolling_sharpe_20, bb_width, stoch_rsi, macd_hist)."""
+    def test_feature_count_is_33(self):
+        """get_feature_columns should return 33 features (taker_buy_ratio disabled — needs force re-download)."""
         from src.features import get_feature_columns
-        assert len(get_feature_columns()) == 34
+        assert len(get_feature_columns()) == 33
 
     def test_build_features_has_new_columns(self):
         """build_features output should include all new feature columns."""

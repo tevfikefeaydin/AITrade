@@ -121,59 +121,45 @@ def compute_intrabar_features(df_1m: pd.DataFrame, df_1h: pd.DataFrame) -> pd.Da
     # Compute 1m log returns
     df_1m["log_ret"] = np.log(df_1m["close"] / df_1m["close"].shift(1))
 
-    # Group by hour
-    features_list = []
+    # Vectorized groupby approach (much faster than iterrows)
+    grouped = df_1m.groupby("hour_floor")
 
-    for _, hour_row in df_1h.iterrows():
-        hour_start = hour_row["open_time"]
-        hour_open = hour_row["open"]
+    # Max high and min low per hour
+    hour_high = grouped["high"].max()
+    hour_low = grouped["low"].min()
 
-        # Get 1m bars within this hour
-        mask = df_1m["hour_floor"] == hour_start
-        hour_1m = df_1m.loc[mask]
+    # Log return stats per hour
+    hour_vol = grouped["log_ret"].std()
+    hour_skew = grouped["log_ret"].apply(lambda x: x.dropna().skew() if len(x.dropna()) > 2 else 0.0)
+    hour_up = grouped["log_ret"].apply(lambda x: (x > 0).sum())
+    hour_down = grouped["log_ret"].apply(lambda x: (x < 0).sum())
 
-        if len(hour_1m) == 0:
-            features_list.append({
-                "open_time": hour_start,
-                "max_runup": 0.0,
-                "max_drawdown": 0.0,
-                "intrabar_vol": 0.0,
-                "intrabar_skew": 0.0,
-                "up_down_ratio": 0.5,
-            })
-            continue
+    # Build lookup by mapping df_1h open_time to groupby results
+    hour_times = df_1h["open_time"].values
+    h_high = hour_high.reindex(hour_times).values
+    h_low = hour_low.reindex(hour_times).values
+    h_open = df_1h["open"].values
 
-        # Max runup: highest high relative to hour open
-        max_high = hour_1m["high"].max()
-        max_runup = (max_high - hour_open) / hour_open if hour_open > 0 else 0.0
+    safe_open = np.where(h_open > 0, h_open, 1.0)
+    max_runup = (h_high - h_open) / safe_open
+    max_drawdown = (h_low - h_open) / safe_open
 
-        # Max drawdown: lowest low relative to hour open (negative value expected)
-        min_low = hour_1m["low"].min()
-        max_drawdown = (min_low - hour_open) / hour_open if hour_open > 0 else 0.0
+    intrabar_vol = hour_vol.reindex(hour_times).values
+    intrabar_skew = hour_skew.reindex(hour_times).values
 
-        # Intrabar volatility
-        log_rets = hour_1m["log_ret"].dropna()
-        intrabar_vol = log_rets.std() if len(log_rets) > 1 else 0.0
+    up_vals = hour_up.reindex(hour_times).values
+    down_vals = hour_down.reindex(hour_times).values
+    total_moves = up_vals + down_vals
+    up_down_ratio = np.where(total_moves > 0, up_vals / total_moves, 0.5)
 
-        # Intrabar skewness
-        intrabar_skew = log_rets.skew() if len(log_rets) > 2 else 0.0
-
-        # Up/down ratio
-        up_count = (log_rets > 0).sum()
-        down_count = (log_rets < 0).sum()
-        total_moves = up_count + down_count
-        up_down_ratio = up_count / total_moves if total_moves > 0 else 0.5
-
-        features_list.append({
-            "open_time": hour_start,
-            "max_runup": max_runup,
-            "max_drawdown": max_drawdown,
-            "intrabar_vol": intrabar_vol if not np.isnan(intrabar_vol) else 0.0,
-            "intrabar_skew": intrabar_skew if not np.isnan(intrabar_skew) else 0.0,
-            "up_down_ratio": up_down_ratio,
-        })
-
-    df_features = pd.DataFrame(features_list)
+    df_features = pd.DataFrame({
+        "open_time": df_1h["open_time"].reset_index(drop=True),
+        "max_runup": np.nan_to_num(max_runup, nan=0.0),
+        "max_drawdown": np.nan_to_num(max_drawdown, nan=0.0),
+        "intrabar_vol": np.nan_to_num(intrabar_vol, nan=0.0),
+        "intrabar_skew": np.nan_to_num(intrabar_skew, nan=0.0),
+        "up_down_ratio": np.nan_to_num(up_down_ratio, nan=0.5),
+    })
 
     logger.info(f"Computed intrabar features for {len(df_features):,} hourly bars")
 
