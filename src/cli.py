@@ -8,10 +8,10 @@ Commands:
 - backtest: Run realistic backtest with costs
 
 Usage:
-    python -m src.cli download [--start 2024-01-01] [--end 2025-12-31]
+    python -m src.cli download [--start 2024-01-01] [--end YYYY-MM-DD]
     python -m src.cli build
-    python -m src.cli train --out models/ --train_window_days 540 --test_window_days 60
-    python -m src.cli backtest --models_dir models/ --fee_bps 10 --slippage_bps 2 --prob_threshold 0.55 --pt 0.008 --sl 0.006 --max_hold 12
+    python -m src.cli train --train_window_days 270 --test_window_days 60
+    python -m src.cli backtest --fee_bps 10 --slippage_bps 2 --prob_threshold 0.50 --pt 0.008 --sl 0.006 --max_hold 12
 """
 
 import argparse
@@ -398,8 +398,8 @@ Examples:
   python -m src.cli download --force            # Force re-download all data
   python -m src.cli download --start 2023-01-01 # Expand date range
   python -m src.cli build
-  python -m src.cli train --train_window_days 540 --test_window_days 60
-  python -m src.cli backtest --prob_threshold 0.55 --fee_bps 10
+  python -m src.cli train --train_window_days 270 --test_window_days 60
+  python -m src.cli backtest --prob_threshold 0.50 --fee_bps 10
 
 Note: This is an educational project. No trading strategy guarantees profits.
 
