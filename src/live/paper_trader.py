@@ -439,13 +439,16 @@ class PaperTrader:
             self._next_entry_allowed_at = now_utc + timedelta(minutes=self.guard_cooldown_minutes)
             self._save_guard_state()
 
+        tp_pct = (tp_price - price) / price * 100
+        sl_pct = (price - sl_price) / price * 100
+
         print(f"\n{'='*50}")
         print(f"[PAPER TRADE] {self.symbol} LONG OPENED")
         print(f"{'='*50}")
         print(f"  Market Price:  ${price:.2f}")
         print(f"  Entry Price:   ${entry_price:.2f} (with costs)")
-        print(f"  Take Profit:   ${tp_price:.2f} (+{self.pt*100:.1f}%)")
-        print(f"  Stop Loss:     ${sl_price:.2f} (-{self.sl*100:.1f}%)")
+        print(f"  Take Profit:   ${tp_price:.2f} (+{tp_pct:.2f}%)")
+        print(f"  Stop Loss:     ${sl_price:.2f} (-{sl_pct:.2f}%)")
         print(f"  Max Exit:      {max_exit_time.strftime('%H:%M:%S')}")
         print(f"  Probability:   {prob:.3f}")
         print(f"{'='*50}\n")

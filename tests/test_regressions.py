@@ -1227,3 +1227,124 @@ def test_backward_compat_signals_disabled():
         config.SIGNAL_BREAKOUT_ENABLED = orig_bo
         config.SIGNAL_MEAN_REVERSION_ENABLED = orig_mr
         config.SIGNAL_VOLUME_SPIKE_ENABLED = orig_vs
+
+
+# ---------------------------------------------------------------------------
+# Regression: compute_baseline_buy_hold returns consistent keys
+# ---------------------------------------------------------------------------
+def test_baseline_buy_hold_early_return_has_bh_cagr():
+    """Early return from compute_baseline_buy_hold must include bh_cagr."""
+    from src.metrics import compute_baseline_buy_hold
+
+    df_short = pd.DataFrame({"close": [100.0], "open_time": [pd.Timestamp("2024-01-01")]})
+    result = compute_baseline_buy_hold(df_short)
+    assert "bh_cagr" in result, "bh_cagr missing from early-return dict"
+    assert "bh_total_return" in result
+    assert "bh_sharpe_ratio" in result
+    assert "bh_max_drawdown" in result
+
+
+def test_baseline_buy_hold_normal_return_has_bh_cagr():
+    """Normal return from compute_baseline_buy_hold must include bh_cagr."""
+    from src.metrics import compute_baseline_buy_hold
+
+    df = pd.DataFrame({
+        "close": np.linspace(100, 110, 100),
+        "open_time": pd.date_range("2024-01-01", periods=100, freq="h"),
+    })
+    result = compute_baseline_buy_hold(df)
+    assert "bh_cagr" in result
+
+
+# ---------------------------------------------------------------------------
+# Regression: feature_buffer wick features return only ratios
+# ---------------------------------------------------------------------------
+def test_feature_buffer_wick_features_no_raw_values():
+    """FeatureBuffer._compute_wick_features should only return ratios."""
+    fb = FeatureBuffer()
+    row = pd.Series({"open": 100.0, "high": 105.0, "low": 95.0, "close": 103.0})
+    result = fb._compute_wick_features(row)
+    assert "upper_wick_ratio" in result
+    assert "lower_wick_ratio" in result
+    assert "body_ratio" in result
+    assert "body" not in result, "raw body should not be returned"
+    assert "range" not in result, "raw range should not be returned"
+    assert "upper_wick" not in result, "raw upper_wick should not be returned"
+    assert "lower_wick" not in result, "raw lower_wick should not be returned"
+
+
+# ---------------------------------------------------------------------------
+# Regression: feature_buffer 4h features exclude volatility_4h
+# ---------------------------------------------------------------------------
+def test_feature_buffer_4h_no_volatility():
+    """FeatureBuffer._compute_4h_features should not return volatility_4h."""
+    fb = FeatureBuffer()
+    result_empty = fb._compute_4h_features(pd.DataFrame(), pd.Timestamp("2024-01-01"))
+    assert "volatility_4h" not in result_empty
+    assert "trend_4h" in result_empty
+    assert "ma_slope_4h" in result_empty
+
+
+# ---------------------------------------------------------------------------
+# Regression: feature_buffer MA features exclude ma_slope
+# ---------------------------------------------------------------------------
+def test_feature_buffer_ma_no_extra_slope():
+    """FeatureBuffer._compute_ma_features should not return ma_slope (model uses ma_slope_4h)."""
+    fb = FeatureBuffer()
+    df = pd.DataFrame({"close": np.linspace(100, 110, 25)})
+    result = fb._compute_ma_features(df)
+    assert "ma_gap" in result
+    assert "ma_slope" not in result, "ma_slope should not be returned (model uses ma_slope_4h)"
+
+
+# ---------------------------------------------------------------------------
+# Regression: simulate_barrier_exit empty window returns raw execution_price
+# ---------------------------------------------------------------------------
+def test_barrier_exit_empty_window_gross_price():
+    """When no 1m data exists, gross_exit_price should be raw execution_price."""
+    from src.backtest import simulate_barrier_exit
+
+    entry_time = pd.Timestamp("2024-01-01 12:00")
+    execution_price = 50000.0
+    entry_price_with_costs = 50006.0  # after costs
+
+    df_1m = pd.DataFrame({
+        "open_time": pd.date_range("2024-01-01", periods=1, freq="min"),
+        "open": [49000.0], "high": [49100.0], "low": [48900.0],
+        "close": [49050.0], "volume": [10.0],
+    })
+
+    _, _, reason, gross_price = simulate_barrier_exit(
+        df_1m=df_1m,
+        entry_time=entry_time,
+        execution_price=execution_price,
+        entry_price_with_costs=entry_price_with_costs,
+        pt=0.008, sl=0.006, max_hold_hours=12,
+        fee_bps=10.0, slippage_bps=2.0,
+    )
+
+    assert reason == "TIMEOUT"
+    assert gross_price == execution_price, (
+        f"gross_exit_price should be raw execution_price ({execution_price}), "
+        f"got {gross_price}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression: config.get_symbol_labeled_path consistency
+# ---------------------------------------------------------------------------
+def test_config_get_symbol_labeled_path():
+    """get_symbol_labeled_path should return consistent path."""
+    path = config.get_symbol_labeled_path("BTCUSDT")
+    assert str(path).endswith("BTCUSDT_labeled.parquet")
+    assert path.parent == config.DATA_DIR
+
+
+# ---------------------------------------------------------------------------
+# Regression: generate_candidates signature has no max_hold
+# ---------------------------------------------------------------------------
+def test_generate_candidates_no_max_hold_param():
+    """generate_candidates should not accept max_hold parameter (removed)."""
+    import inspect
+    sig = inspect.signature(generate_candidates)
+    assert "max_hold" not in sig.parameters, "max_hold param should be removed"

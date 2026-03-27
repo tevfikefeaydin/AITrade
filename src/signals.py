@@ -265,7 +265,6 @@ def _build_candidate_rows(
 def generate_candidates(
     df: pd.DataFrame,
     rolling_window: int = None,
-    max_hold: int = None,
 ) -> pd.DataFrame:
     """
     Generate candidate trades from all enabled signal types.
@@ -277,13 +276,11 @@ def generate_candidates(
     Args:
         df: DataFrame with features including close, trend_4h, rsi, etc.
         rolling_window: N-bar lookback for breakout detection
-        max_hold: Maximum holding period in bars
 
     Returns:
         DataFrame with candidate trades including signal_type and signal_type_encoded
     """
     rolling_window = rolling_window or config.ROLLING_WINDOW
-    max_hold = max_hold or config.DEFAULT_MAX_HOLD
 
     df = df.copy()
 
