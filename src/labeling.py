@@ -7,8 +7,10 @@ Implements the triple-barrier labeling method:
 - Time barrier: maximum holding period (max_hold) reached
 
 Label assignment:
-- y = 1 if TP barrier hit first (successful trade)
-- y = 0 if SL barrier hit first OR time barrier hit (unsuccessful trade)
+- y = 1.0 if TP barrier hit first (successful trade)
+- y = 0.0 if SL barrier hit first (unsuccessful trade)
+- y = 0.0..1.0 if timeout: fractional label scaled by exit return
+  position between SL and TP (0 at SL level, 1 at TP level)
 
 Uses 1-minute data for precise barrier detection.
 """
@@ -51,7 +53,7 @@ def find_barrier_touch(
 
     Returns:
         Tuple of (label, exit_time, exit_price, exit_reason)
-        - label: 1 if TP hit, 0 if SL hit or timeout
+        - label: 1.0 if TP hit, 0.0 if SL hit, 0.0-1.0 fractional if timeout
         - exit_time: Timestamp of exit
         - exit_price: Price at exit
         - exit_reason: "TP", "SL", or "TIMEOUT"
@@ -150,7 +152,7 @@ def label_candidates(
     For each candidate entry:
     1. Look forward in 1m data
     2. Find which barrier (TP, SL, or time) is touched first
-    3. Assign label: y=1 if TP, y=0 if SL or timeout
+    3. Assign label: 1.0 if TP, 0.0 if SL, fractional 0-1 if timeout
 
     Args:
         df_candidates: DataFrame with entry_time, entry_price columns

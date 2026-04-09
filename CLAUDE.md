@@ -124,7 +124,7 @@ Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 - [x] OOS backtest: walk-forward fold predictions saved & used for honest backtesting (prevents in-sample overfitting)
 - [x] ML model improvements: 270d train window (~7-8 folds), LightGBM regularization (num_leaves=15, reg_alpha/lambda), early stopping (patience=20), two-pass feature pruning (<1% importance)
 - [x] Multi-signal entry system: breakout + mean-reversion + volume-spike with signal_type_encoded model feature
-- [x] ATR dynamic barriers: TP_mult=2.0, SL_mult=1.5, floor=0.4%, ceil=3.0%
+- [x] ATR dynamic barriers: TP_mult=2.0, SL_mult=1.5, floor=0.8%, ceil=3.0%
 - [x] 5 new features: volume_ratio, atr_ratio, ret_24, hour_sin, hour_cos
 - [x] Barrier floor raised 0.4%→0.8% (costs were eating floor-level TPs)
 - [x] MR bearish trend guard: `trend_4h OR ret_24 > -5%` prevents longs in deep downtrends
@@ -134,9 +134,7 @@ Signal (1): signal_type_encoded (0=breakout, 1=mean_reversion, 2=volume_spike)
 - [x] Per-trade Sharpe added to metrics (trade_sharpe) alongside hourly Sharpe
 
 ### Known Discrepancies (Live vs Offline)
-- `feature_buffer.py` computes `volatility_4h` (extra feature not in offline training set)
-- `feature_buffer.py` computes `ma_slope` (extra, not used by model - model uses `ma_slope_4h`)
-- These extras don't cause errors because model.feature_cols_ filters to trained features only
+- (Resolved) `feature_buffer.py` previously computed extra features (`volatility_4h`, `ma_slope`, raw wicks) not in the offline model; these have been removed to align with `get_feature_columns()`
 
 ### Not Implemented
 - [ ] Real live trading (only paper trading)
@@ -226,6 +224,10 @@ pytest tests/test_regressions.py -v # Regression tests
 - `websocket_client.py`: REST gap-fill on WS reconnect (fills missing 1m bars + rebuilds 1h/4h)
 - `train.py` + `backtest.py` + `cli.py`: OOS prediction pipeline — backtest was using final model (trained on ALL data) causing in-sample overfitting; now uses walk-forward out-of-sample fold predictions
 - `config.py` + `train.py`: ML model improvements — train window 540→270d, LightGBM regularization (num_leaves 31→15, reg_alpha=0.1, reg_lambda=1.0, min_child_samples=20), early stopping (n_estimators 100→500 with patience=20), two-pass feature pruning (drops features with <1% avg importance)
+- `feature_buffer.py`: Removed extra features not in model (volatility_4h, ma_slope, raw wick values body/range/upper_wick/lower_wick); updated docstring from "22 features" to match actual 27
+- `paper_trader.py`: TP/SL display now shows actual ATR-based percentages instead of fixed pt/sl; paths use config.OUTPUTS_DIR instead of relative paths
+- `cli.py`: Removed unused --models_dir argument from backtest parser
+- `labeling.py`: Updated docstring to document fractional timeout labels (was stale binary description)
 
 ## Important Notes
 - **STALE BUILD WARNING**: After ANY code change to `signals.py`, `labeling.py`, `features.py`, or `resample.py`, you MUST re-run `python -m src.cli build` before `train`/`backtest`. Stale parquet files will silently produce wrong labels. Symptom: label distribution mismatch between environments (e.g., 23% vs 40% positive rate was caused by stale T+0 labels after T+1 fix). The labeled parquet must contain `execution_time`/`execution_price` columns — if missing, the build is stale.
